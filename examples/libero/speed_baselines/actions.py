@@ -36,10 +36,10 @@ class SupActionComposer:
         output_min: np.ndarray,
         output_max: np.ndarray,
     ) -> None:
-        self.input_min = np.asarray(input_min, dtype=np.float64)
-        self.input_max = np.asarray(input_max, dtype=np.float64)
-        self.output_min = np.asarray(output_min, dtype=np.float64)
-        self.output_max = np.asarray(output_max, dtype=np.float64)
+        self.input_min = _as_six(input_min, "input_min")
+        self.input_max = _as_six(input_max, "input_max")
+        self.output_min = _as_six(output_min, "output_min")
+        self.output_max = _as_six(output_max, "output_max")
         expected = (6,)
         for name, value in (
             ("input_min", self.input_min),
@@ -173,3 +173,12 @@ def _validate_actions(actions: np.ndarray) -> np.ndarray:
 def _validate_stride(stride: int) -> None:
     if stride < 1:
         raise ValueError(f"stride must be >= 1, got {stride}")
+
+
+def _as_six(value: np.ndarray, name: str) -> np.ndarray:
+    array = np.asarray(value, dtype=np.float64)
+    if array.shape == ():
+        return np.full(6, float(array), dtype=np.float64)
+    if array.shape != (6,):
+        raise ValueError(f"{name} must be scalar or shape (6,), got {array.shape}")
+    return array

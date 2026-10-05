@@ -40,6 +40,17 @@ def test_uniform_stride_two_keeps_odd_tail(composer):
     np.testing.assert_allclose([item.action[0] for item in slices], [0.2, 0.2, 0.1])
 
 
+def test_composer_broadcasts_scalar_input_range():
+    composer = SupActionComposer(
+        input_min=-1,
+        input_max=1,
+        output_min=np.array([-0.05, -0.05, -0.05, -0.5, -0.5, -0.5]),
+        output_max=np.array([0.05, 0.05, 0.05, 0.5, 0.5, 0.5]),
+    )
+    merged = composer.merge(np.zeros((2, 7)))
+    np.testing.assert_allclose(merged, np.zeros(7))
+
+
 def test_sail_never_swallows_critical_second_action(composer):
     actions = np.zeros((4, 7))
     actions[:, 6] = -1.0
