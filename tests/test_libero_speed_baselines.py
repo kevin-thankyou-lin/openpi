@@ -5,7 +5,7 @@ import pytest
 from scipy.spatial.transform import Rotation
 
 from examples.libero.speed_baselines.actions import SupActionComposer, sail_precision_slices, uniform_slices
-from examples.libero.speed_baselines.result_utils import atomic_write_json, summarize_episodes
+from examples.libero.speed_baselines.result_utils import atomic_write_json, summarize_episodes, summarize_tasks
 
 
 @pytest.fixture
@@ -103,6 +103,82 @@ def test_summary_is_episode_weighted():
         "mean_success_env_steps": 15,
         "mean_success_source_actions": 30,
     }
+
+
+def test_task_summaries_are_episode_weighted_and_sorted():
+    episodes = [
+        {
+            "task_id": 3,
+            "task_description": "task three",
+            "success": True,
+            "env_steps": 10,
+            "source_actions_consumed": 20,
+        },
+        {
+            "task_id": 1,
+            "task_description": "task one",
+            "success": False,
+            "env_steps": 40,
+            "source_actions_consumed": 80,
+        },
+        {
+            "task_id": 3,
+            "task_description": "task three",
+            "success": False,
+            "env_steps": 30,
+            "source_actions_consumed": 60,
+        },
+        {
+            "task_id": 1,
+            "task_description": "task one",
+            "success": True,
+            "env_steps": 20,
+            "source_actions_consumed": 40,
+        },
+    ]
+
+    assert summarize_tasks(episodes) == [
+        {
+            "task_id": 1,
+            "task_description": "task one",
+            "total_episodes": 2,
+            "total_successes": 1,
+            "success_rate": 0.5,
+            "mean_success_env_steps": 20,
+            "mean_success_source_actions": 40,
+        },
+        {
+            "task_id": 3,
+            "task_description": "task three",
+            "total_episodes": 2,
+            "total_successes": 1,
+            "success_rate": 0.5,
+            "mean_success_env_steps": 10,
+            "mean_success_source_actions": 20,
+        },
+    ]
+
+
+def test_task_summaries_reject_inconsistent_descriptions():
+    with pytest.raises(ValueError, match="inconsistent descriptions"):
+        summarize_tasks(
+            [
+                {
+                    "task_id": 0,
+                    "task_description": "first",
+                    "success": True,
+                    "env_steps": 1,
+                    "source_actions_consumed": 1,
+                },
+                {
+                    "task_id": 0,
+                    "task_description": "second",
+                    "success": True,
+                    "env_steps": 1,
+                    "source_actions_consumed": 1,
+                },
+            ]
+        )
 
 
 def test_atomic_json_replaces_complete_payload(tmp_path):

@@ -22,7 +22,7 @@ import tyro
 
 from .actions import SupActionComposer, native_slices, sail_precision_slices, uniform_slices
 from .controller import apply_sup_controller_patches
-from .result_utils import atomic_write_json, summarize_episodes
+from .result_utils import atomic_write_json, summarize_episodes, summarize_tasks
 from .selector_client import SupSelectorClient
 
 
@@ -138,6 +138,7 @@ def eval_speed_baseline(args: Args) -> None:
                         "config_sha256": config_hash,
                         "episodes": episodes,
                         "summary": summarize_episodes(episodes),
+                        "task_summaries": summarize_tasks(episodes),
                     }
                     atomic_write_json(results_path, payload)
                     logging.info("TASK_RESULT %s", json.dumps(result, sort_keys=True))
@@ -152,6 +153,7 @@ def eval_speed_baseline(args: Args) -> None:
         "config_sha256": config_hash,
         "episodes": episodes,
         "summary": summarize_episodes(episodes),
+        "task_summaries": summarize_tasks(episodes),
     }
     atomic_write_json(results_path, payload)
     logging.info("EVAL_COMPLETE %s", json.dumps(payload["summary"], sort_keys=True))

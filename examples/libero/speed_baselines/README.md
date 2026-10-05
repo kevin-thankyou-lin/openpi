@@ -46,7 +46,9 @@ an AWE proxy and must not be reported as SAIL.
 
 Each run holds a nonblocking lock, writes an immutable manifest, saves per-task
 videos, checkpoints `results.json` atomically after every episode, and records
-exact environment steps and source-action consumption. Resume is allowed only
+exact environment steps and source-action consumption. Results include an
+episode-weighted overall `summary` and ordered `task_summaries` containing
+success counts, rates, and successful-rollout step means. Resume is allowed only
 when the full configuration matches the manifest. `--task-start` and
 `--task-count` may be used for an isolated integration smoke; reportable
 LIBERO-Long runs omit both restrictions and therefore cover all 10 tasks.

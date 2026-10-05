@@ -40,3 +40,24 @@ def summarize_episodes(episodes: list[dict[str, Any]]) -> dict[str, Any]:
             else None
         ),
     }
+
+
+def summarize_tasks(episodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return episode-weighted metrics for each task, ordered by task id."""
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for episode in episodes:
+        grouped.setdefault(int(episode["task_id"]), []).append(episode)
+
+    task_summaries = []
+    for task_id, task_episodes in sorted(grouped.items()):
+        descriptions = {str(episode["task_description"]) for episode in task_episodes}
+        if len(descriptions) != 1:
+            raise ValueError(f"task {task_id} has inconsistent descriptions: {sorted(descriptions)}")
+        task_summaries.append(
+            {
+                "task_id": task_id,
+                "task_description": descriptions.pop(),
+                **summarize_episodes(task_episodes),
+            }
+        )
+    return task_summaries
