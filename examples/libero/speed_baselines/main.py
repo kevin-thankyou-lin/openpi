@@ -24,6 +24,7 @@ from .actions import SupActionComposer, native_slices, sail_precision_slices, un
 from .controller import apply_sup_controller_patches
 from .result_utils import atomic_write_json, summarize_episodes, summarize_tasks
 from .selector_client import SupSelectorClient
+from .telemetry import record_from_obs, write_episode
 
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
@@ -61,6 +62,7 @@ class Args:
     sail_expected_tau: float = 0.01
     fast_stride: int = 2
     resume: bool = False
+    save_strider_telemetry: bool = False
 
 
 def eval_speed_baseline(args: Args) -> None:
@@ -181,6 +183,7 @@ def _run_episode(
     decision_index = 0
     decisions: list[dict] = []
     frames: list[np.ndarray] = []
+    telemetry_records: list[dict] = []
     done = False
     horizon = MAX_STEPS[args.task_suite_name]
 
@@ -217,6 +220,15 @@ def _run_episode(
             action_plan.extend(slices)
 
         action_slice = action_plan.popleft()
+        if args.save_strider_telemetry:
+            telemetry_records.append(
+                record_from_obs(
+                    obs,
+                    action=action_slice.action,
+                    env_step=env_steps,
+                    source_stride=action_slice.stride,
+                )
+            )
         obs, _reward, done, _info = env.step(action_slice.action.tolist())
         env_steps += 1
         source_actions_consumed += action_slice.stride
@@ -225,9 +237,22 @@ def _run_episode(
     success = bool(done)
     suffix = "success" if success else "failure"
     video_path = videos_dir / f"task_{task_id:02d}_episode_{episode_index:02d}_{suffix}.mp4"
+    telemetry_path = None
     if frames:
         imageio.mimwrite(video_path, frames, fps=10)
-    return {
+        if args.save_strider_telemetry:
+            telemetry_path = write_episode(
+                args.run_dir / "strider_telemetry" / f"task_{task_id:02d}_episode_{episode_index:02d}",
+                video_path=video_path,
+                records=telemetry_records,
+                metadata={
+                    "task_id": task_id,
+                    "task_description": task_description,
+                    "episode_index": episode_index,
+                    "success": success,
+                },
+            )
+    result = {
         "task_id": task_id,
         "task_description": task_description,
         "episode_index": episode_index,
@@ -238,6 +263,9 @@ def _run_episode(
         "decisions": decisions,
         "video": str(video_path),
     }
+    if telemetry_path is not None:
+        result["strider_telemetry"] = str(telemetry_path)
+    return result
 
 
 def _schedule_actions(actions, response, state, args, composer, selector):

@@ -6,6 +6,7 @@ from scipy.spatial.transform import Rotation
 
 from examples.libero.speed_baselines.actions import SupActionComposer, sail_precision_slices, uniform_slices
 from examples.libero.speed_baselines.result_utils import atomic_write_json, summarize_episodes, summarize_tasks
+from examples.libero.speed_baselines.telemetry import record_from_obs, write_episode
 
 
 @pytest.fixture
@@ -186,3 +187,65 @@ def test_atomic_json_replaces_complete_payload(tmp_path):
     atomic_write_json(path, {"status": "running"})
     atomic_write_json(path, {"status": "complete", "count": 1})
     assert json.loads(path.read_text()) == {"status": "complete", "count": 1}
+
+
+def test_strider_telemetry_record_is_robot_only_and_copied():
+    obs = {
+        "robot0_joint_pos": np.arange(7, dtype=np.float64),
+        "robot0_gripper_qpos": np.array([-0.02, 0.02]),
+        "robot0_eef_pos": np.array([0.1, 0.2, 0.3]),
+        "robot0_eef_quat": np.array([0.0, 0.0, 0.0, 1.0]),
+        "object_state": np.array([99.0]),
+    }
+    action = np.arange(7, dtype=np.float64)
+    record = record_from_obs(obs, action=action, env_step=3, source_stride=2)
+    assert set(record) == {
+        "joint_pos",
+        "gripper_pos",
+        "eef_pos",
+        "eef_quat",
+        "proprio",
+        "action",
+        "env_step",
+        "source_stride",
+    }
+    np.testing.assert_allclose(
+        record["proprio"], np.concatenate([np.arange(7, dtype=np.float32), [-0.02, 0.02]])
+    )
+    assert record["env_step"] == 3
+    assert record["source_stride"] == 2
+    obs["robot0_joint_pos"][0] = 100.0
+    assert record["joint_pos"][0] == 0.0
+
+
+def test_strider_telemetry_episode_is_atomic_and_hash_pinned(tmp_path):
+    video = tmp_path / "rollout.mp4"
+    video.write_bytes(b"not-a-real-video-but-nonempty")
+    records = []
+    for step in range(2):
+        records.append(
+            record_from_obs(
+                {
+                    "robot0_joint_pos": np.arange(7) + step,
+                    "robot0_gripper_qpos": np.array([-0.02, 0.02]),
+                    "robot0_eef_pos": np.array([0.1, 0.2, 0.3]),
+                    "robot0_eef_quat": np.array([0.0, 0.0, 0.0, 1.0]),
+                },
+                action=np.zeros(7),
+                env_step=step,
+                source_stride=1,
+            )
+        )
+    episode = write_episode(
+        tmp_path / "telemetry" / "task_00_episode_00",
+        video_path=video,
+        records=records,
+        metadata={"task_id": 0, "episode_index": 0, "success": True},
+    )
+    metadata = json.loads((episode / "metadata.json").read_text())
+    assert metadata["schema"] == "openpi_libero_strider_telemetry.v1"
+    assert metadata["frame_count"] == 2
+    assert metadata["array_shapes"]["proprio.npy"] == [2, 9]
+    assert len(metadata["sha256"]) == 9
+    assert (episode / "top_camera-images-rgb.mp4").stat().st_ino == video.stat().st_ino
+    assert not (episode.parent / ".task_00_episode_00.partial").exists()
