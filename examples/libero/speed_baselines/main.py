@@ -24,6 +24,7 @@ from .actions import SupActionComposer, native_slices, sail_precision_slices, un
 from .controller import apply_sup_controller_patches
 from .result_utils import atomic_write_json, summarize_episodes, summarize_tasks
 from .selector_client import SupSelectorClient
+from .strider_client import STRIDER_AUTHORITY, StriderPhaseSelector, pop_strider_slice
 from .telemetry import record_from_obs, write_episode
 
 
@@ -41,7 +42,7 @@ SUP_SUPPLEMENT_SHA256 = "93f5b6a7615b94de6f3dfdec6dbe1fdc92332d26220dbf5a3ce6d7e
 
 @dataclasses.dataclass(frozen=True)
 class Args:
-    method: Literal["native", "uniform", "sup", "sail"]
+    method: Literal["native", "uniform", "sup", "sail", "strider"]
     run_dir: pathlib.Path
     host: str = "127.0.0.1"
     port: int = 8000
@@ -61,6 +62,10 @@ class Args:
     sail_head_index: int = 2
     sail_expected_tau: float = 0.01
     fast_stride: int = 2
+    strider_checkpoint: Optional[pathlib.Path] = None
+    strider_phase_repo: Optional[pathlib.Path] = None
+    strider_schedule: Optional[pathlib.Path] = None
+    strider_device: str = "cuda"
     resume: bool = False
     save_strider_telemetry: bool = False
 
@@ -77,6 +82,9 @@ def eval_speed_baseline(args: Args) -> None:
     config = dataclasses.asdict(args)
     config.pop("resume")
     config["run_dir"] = str(args.run_dir)
+    for name in ("strider_checkpoint", "strider_phase_repo", "strider_schedule"):
+        if config[name] is not None:
+            config[name] = str(config[name])
     config["openpi_commit"] = _git_head()
     config["libero_commit"] = _git_head(pathlib.Path("third_party/libero"))
     config["sup_supplement_sha256"] = SUP_SUPPLEMENT_SHA256
@@ -85,6 +93,13 @@ def eval_speed_baseline(args: Args) -> None:
         "native" if args.method == "native" else "sup-supplement-unclip-panda-speed-0.02-mujoco-step"
     )
     config["action_composition"] = "controller-space sum-position left-compose-rotation last-gripper"
+    if args.method == "strider":
+        config["strider_checkpoint_sha256"] = _sha256(args.strider_checkpoint)
+        config["strider_schedule_sha256"] = _sha256(args.strider_schedule)
+        config["strider_phase_repo_commit"] = _git_head(args.strider_phase_repo)
+        config["authority"] = STRIDER_AUTHORITY
+        config["requires_human_confirmation"] = True
+        config["speed_schedule_status"] = "candidate_not_promoted"
     config_hash = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
     config["config_sha256"] = config_hash
     manifest_path = args.run_dir / "manifest.json"
@@ -102,6 +117,17 @@ def eval_speed_baseline(args: Args) -> None:
     policy = websocket_client_policy.WebsocketClientPolicy(args.host, args.port)
     policy_metadata = policy.get_server_metadata()
     selector = SupSelectorClient(args.selector_host, args.selector_port) if args.method == "sup" else None
+    strider = (
+        StriderPhaseSelector(
+            checkpoint=args.strider_checkpoint,
+            phase_repo=args.strider_phase_repo,
+            schedule=args.strider_schedule,
+            fast_stride=args.fast_stride,
+            device=args.strider_device,
+        )
+        if args.method == "strider"
+        else None
+    )
     if args.method == "sail":
         _validate_sail_metadata(policy_metadata, args)
 
@@ -132,6 +158,7 @@ def eval_speed_baseline(args: Args) -> None:
                         policy=policy,
                         composer=composer,
                         selector=selector,
+                        strider=strider,
                         videos_dir=videos_dir,
                     )
                     episodes.append(result)
@@ -172,6 +199,7 @@ def _run_episode(
     policy,
     composer: SupActionComposer,
     selector: SupSelectorClient | None,
+    strider: StriderPhaseSelector | None,
     videos_dir: pathlib.Path,
 ) -> dict:
     logging.info("Task %d: %s", task_id, task_description)
@@ -182,10 +210,13 @@ def _run_episode(
     action_plan: collections.deque = collections.deque()
     decision_index = 0
     decisions: list[dict] = []
+    phase_decisions: list[dict] = []
     frames: list[np.ndarray] = []
     telemetry_records: list[dict] = []
     done = False
     horizon = MAX_STEPS[args.task_suite_name]
+    if strider is not None:
+        strider.reset_episode()
 
     for _ in range(args.num_steps_wait):
         obs, _reward, done, _info = env.step(LIBERO_DUMMY_ACTION)
@@ -212,14 +243,30 @@ def _run_episode(
                 }
             )
             actions = np.asarray(response["actions"], dtype=np.float64)[: args.chunk_size]
-            slices, decision = _schedule_actions(actions, response, state, args, composer, selector)
+            if strider is None:
+                slices, decision = _schedule_actions(actions, response, state, args, composer, selector)
+                action_plan.extend(slices)
+            else:
+                action_plan.extend(action.copy() for action in actions)
+                decision = {"selected_k": None, "slice_strides": []}
             decision["decision_index"] = decision_index
             decision["env_step"] = env_steps
             decisions.append(decision)
             decision_index += 1
-            action_plan.extend(slices)
-
-        action_slice = action_plan.popleft()
+        if strider is None:
+            action_slice = action_plan.popleft()
+        else:
+            selected_k, phase_decision = strider.select(image, obs, task_id=task_id)
+            action_slice = pop_strider_slice(action_plan, stride=selected_k, composer=composer)
+            decisions[-1]["slice_strides"].append(action_slice.stride)
+            phase_decision.update(
+                {
+                    "env_step": env_steps,
+                    "selected_k": selected_k,
+                    "source_stride": action_slice.stride,
+                }
+            )
+            phase_decisions.append(phase_decision)
         if args.save_strider_telemetry:
             telemetry_records.append(
                 record_from_obs(
@@ -265,6 +312,9 @@ def _run_episode(
     }
     if telemetry_path is not None:
         result["strider_telemetry"] = str(telemetry_path)
+    if strider is not None:
+        result["phase_decision_count"] = len(phase_decisions)
+        result["phase_decisions"] = phase_decisions
     return result
 
 
@@ -380,10 +430,32 @@ def _validate_args(args: Args) -> None:
         raise ValueError("paper LIBERO uniform baseline requires stride 2")
     if args.method in ("sup", "sail") and args.fast_stride != 2:
         raise ValueError("paper LIBERO accelerated methods require fast stride 2")
+    if args.method == "strider":
+        if args.fast_stride != 2:
+            raise ValueError("registered Strider LIBERO candidate schedule requires fast stride 2")
+        required = {
+            "strider_checkpoint": args.strider_checkpoint,
+            "strider_phase_repo": args.strider_phase_repo,
+            "strider_schedule": args.strider_schedule,
+        }
+        missing = [name for name, value in required.items() if value is None]
+        if missing:
+            raise ValueError(f"Strider method requires {missing}")
+        for name, path in required.items():
+            if not pathlib.Path(path).exists():
+                raise FileNotFoundError(f"{name} does not exist: {path}")
 
 
 def _git_head(path: pathlib.Path = pathlib.Path(".")) -> str:
     return subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True).strip()
+
+
+def _sha256(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with pathlib.Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _implementation_hashes() -> dict[str, str]:

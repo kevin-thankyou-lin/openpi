@@ -1,4 +1,5 @@
 import json
+import collections
 
 import numpy as np
 import pytest
@@ -7,6 +8,12 @@ from scipy.spatial.transform import Rotation
 from examples.libero.speed_baselines.actions import SupActionComposer, sail_precision_slices, uniform_slices
 from examples.libero.speed_baselines.result_utils import atomic_write_json, summarize_episodes, summarize_tasks
 from examples.libero.speed_baselines.telemetry import record_from_obs, write_episode
+from examples.libero.speed_baselines.strider_client import (
+    causal_history,
+    load_candidate_schedule,
+    pop_strider_slice,
+    proprio_from_obs,
+)
 
 
 @pytest.fixture
@@ -249,3 +256,54 @@ def test_strider_telemetry_episode_is_atomic_and_hash_pinned(tmp_path):
     assert len(metadata["sha256"]) == 9
     assert (episode / "top_camera-images-rgb.mp4").stat().st_ino == video.stat().st_ino
     assert not (episode.parent / ".task_00_episode_00.partial").exists()
+
+
+def test_strider_causal_history_is_left_padded_and_strided():
+    values = [np.full(9, index, dtype=np.float32) for index in range(4)]
+    history = causal_history(values, history=4, stride=2)
+    np.testing.assert_array_equal(history[:, 0], [0, 0, 1, 3])
+
+
+def test_strider_proprio_uses_only_nine_robot_features():
+    obs = {
+        "robot0_joint_pos": np.arange(7, dtype=np.float32),
+        "robot0_gripper_qpos": np.array([-0.1, 0.1], dtype=np.float32),
+        "object_state": np.array([99.0], dtype=np.float32),
+    }
+    np.testing.assert_array_equal(
+        proprio_from_obs(obs),
+        np.concatenate(
+            [np.arange(7, dtype=np.float32), np.array([-0.1, 0.1], dtype=np.float32)]
+        ),
+    )
+
+
+def test_strider_candidate_schedule_is_exact_and_non_authoritative(tmp_path):
+    schedule = tmp_path / "schedule.json"
+    schedule.write_text(
+        json.dumps(
+            {
+                "schema": "strider-libero-subtask-candidate-v1",
+                "review_gate": "non-authoritative until every boundary is visually reviewed",
+                "tasks": {"2": {"subtasks": [["approach", 2], ["contact", 1]]}},
+            }
+        )
+    )
+    speeds, task_ids = load_candidate_schedule(
+        schedule,
+        checkpoint_phases=("task_02:approach", "task_02:contact"),
+        fast_stride=2,
+    )
+    assert speeds == {"task_02:approach": 2, "task_02:contact": 1}
+    assert task_ids == {2}
+
+
+def test_strider_action_consumption_respects_speed_and_odd_tail(composer):
+    plan = collections.deque(np.full(7, value, dtype=np.float64) for value in (0.1, 0.2, 0.3))
+    first = pop_strider_slice(plan, stride=2, composer=composer)
+    second = pop_strider_slice(plan, stride=2, composer=composer)
+    assert first.stride == 2
+    assert second.stride == 1
+    assert len(plan) == 0
+    np.testing.assert_allclose(first.action[:3], [0.3, 0.3, 0.3])
+    np.testing.assert_allclose(second.action, np.full(7, 0.3))
