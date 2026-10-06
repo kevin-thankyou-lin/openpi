@@ -13,6 +13,7 @@ from .actions import ActionSlice, SupActionComposer
 
 STRIDER_AUTHORITY = "AI_CANDIDATE_NOT_HUMAN_ANNOTATION"
 STRIDER_SCHEDULE_SCHEMA = "strider-libero-subtask-candidate-v1"
+STRIDER_SERVER_METHOD = "strider_phase_candidate"
 
 
 def causal_history(values: list[np.ndarray], *, history: int, stride: int) -> np.ndarray:
@@ -82,6 +83,35 @@ def pop_strider_slice(
     actions = np.stack([np.asarray(action_plan.popleft(), dtype=np.float64) for _ in range(count)])
     action = actions[0].copy() if count == 1 else composer.merge(actions)
     return ActionSlice(action=action, source_indices=tuple(range(count)))
+
+
+def validate_strider_server_metadata(
+    metadata: dict[str, Any],
+    *,
+    checkpoint_sha256: str,
+    schedule_sha256: str,
+    evaluator_commit: str,
+    fast_stride: int,
+) -> None:
+    expected = {
+        "method": STRIDER_SERVER_METHOD,
+        "base_policy": "pi05_libero",
+        "base_checkpoint": "gs://openpi-assets/checkpoints/pi05_libero",
+        "phase_checkpoint_sha256": checkpoint_sha256,
+        "phase_schedule_sha256": schedule_sha256,
+        "evaluator_commit": evaluator_commit,
+        "fast_stride": fast_stride,
+        "authority": STRIDER_AUTHORITY,
+        "requires_human_confirmation": True,
+        "speed_schedule_status": "candidate_not_promoted",
+    }
+    mismatches = {
+        key: {"expected": value, "actual": metadata.get(key)}
+        for key, value in expected.items()
+        if metadata.get(key) != value
+    }
+    if mismatches:
+        raise ValueError(f"Strider server metadata mismatch: {mismatches}")
 
 
 class StriderPhaseSelector:

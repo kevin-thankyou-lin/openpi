@@ -24,7 +24,12 @@ from .actions import SupActionComposer, native_slices, sail_precision_slices, un
 from .controller import apply_sup_controller_patches
 from .result_utils import atomic_write_json, summarize_episodes, summarize_tasks
 from .selector_client import SupSelectorClient
-from .strider_client import STRIDER_AUTHORITY, StriderPhaseSelector, pop_strider_slice
+from .strider_client import (
+    STRIDER_AUTHORITY,
+    StriderPhaseSelector,
+    pop_strider_slice,
+    validate_strider_server_metadata,
+)
 from .telemetry import record_from_obs, write_episode
 
 
@@ -130,6 +135,14 @@ def eval_speed_baseline(args: Args) -> None:
     )
     if args.method == "sail":
         _validate_sail_metadata(policy_metadata, args)
+    if args.method == "strider":
+        validate_strider_server_metadata(
+            policy_metadata,
+            checkpoint_sha256=_sha256(args.strider_checkpoint),
+            schedule_sha256=_sha256(args.strider_schedule),
+            evaluator_commit=_git_head(),
+            fast_stride=args.fast_stride,
+        )
 
     task_suite = benchmark.get_benchmark_dict()[args.task_suite_name]()
     videos_dir = args.run_dir / "videos"

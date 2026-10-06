@@ -13,6 +13,7 @@ from examples.libero.speed_baselines.strider_client import (
     load_candidate_schedule,
     pop_strider_slice,
     proprio_from_obs,
+    validate_strider_server_metadata,
 )
 
 
@@ -307,3 +308,34 @@ def test_strider_action_consumption_respects_speed_and_odd_tail(composer):
     assert len(plan) == 0
     np.testing.assert_allclose(first.action[:3], [0.3, 0.3, 0.3])
     np.testing.assert_allclose(second.action, np.full(7, 0.3))
+
+
+def test_strider_server_metadata_is_exact_and_candidate_only():
+    metadata = {
+        "method": "strider_phase_candidate",
+        "base_policy": "pi05_libero",
+        "base_checkpoint": "gs://openpi-assets/checkpoints/pi05_libero",
+        "phase_checkpoint_sha256": "checkpoint",
+        "phase_schedule_sha256": "schedule",
+        "evaluator_commit": "commit",
+        "fast_stride": 2,
+        "authority": "AI_CANDIDATE_NOT_HUMAN_ANNOTATION",
+        "requires_human_confirmation": True,
+        "speed_schedule_status": "candidate_not_promoted",
+    }
+    validate_strider_server_metadata(
+        metadata,
+        checkpoint_sha256="checkpoint",
+        schedule_sha256="schedule",
+        evaluator_commit="commit",
+        fast_stride=2,
+    )
+    metadata["fast_stride"] = 1
+    with pytest.raises(ValueError, match="fast_stride"):
+        validate_strider_server_metadata(
+            metadata,
+            checkpoint_sha256="checkpoint",
+            schedule_sha256="schedule",
+            evaluator_commit="commit",
+            fast_stride=2,
+        )
