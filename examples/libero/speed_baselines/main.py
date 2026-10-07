@@ -444,8 +444,8 @@ def _validate_args(args: Args) -> None:
     if args.method in ("sup", "sail") and args.fast_stride != 2:
         raise ValueError("paper LIBERO accelerated methods require fast stride 2")
     if args.method == "strider":
-        if args.fast_stride != 2:
-            raise ValueError("registered Strider LIBERO candidate schedule requires fast stride 2")
+        if args.fast_stride not in (2, 3):
+            raise ValueError("registered Strider LIBERO candidate schedule requires fast stride 2 or 3")
         required = {
             "strider_checkpoint": args.strider_checkpoint,
             "strider_phase_repo": args.strider_phase_repo,

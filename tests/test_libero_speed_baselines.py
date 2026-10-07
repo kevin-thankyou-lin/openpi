@@ -299,6 +299,26 @@ def test_strider_candidate_schedule_is_exact_and_non_authoritative(tmp_path):
     assert task_ids == {2}
 
 
+def test_strider_candidate_schedule_accepts_registered_stride_three(tmp_path):
+    schedule = tmp_path / "schedule.json"
+    schedule.write_text(
+        json.dumps(
+            {
+                "schema": "strider-libero-subtask-candidate-v1",
+                "review_gate": "non-authoritative until every boundary is visually reviewed",
+                "tasks": {"2": {"subtasks": [["approach", 3], ["contact", 1]]}},
+            }
+        )
+    )
+    speeds, task_ids = load_candidate_schedule(
+        schedule,
+        checkpoint_phases=("task_02:approach", "task_02:contact"),
+        fast_stride=3,
+    )
+    assert speeds == {"task_02:approach": 3, "task_02:contact": 1}
+    assert task_ids == {2}
+
+
 def test_strider_action_consumption_respects_speed_and_odd_tail(composer):
     plan = collections.deque(np.full(7, value, dtype=np.float64) for value in (0.1, 0.2, 0.3))
     first = pop_strider_slice(plan, stride=2, composer=composer)
@@ -308,6 +328,17 @@ def test_strider_action_consumption_respects_speed_and_odd_tail(composer):
     assert len(plan) == 0
     np.testing.assert_allclose(first.action[:3], [0.3, 0.3, 0.3])
     np.testing.assert_allclose(second.action, np.full(7, 0.3))
+
+
+def test_strider_action_consumption_supports_stride_three_and_tail(composer):
+    plan = collections.deque(np.full(7, value, dtype=np.float64) for value in (0.1, 0.2, 0.3, 0.4))
+    first = pop_strider_slice(plan, stride=3, composer=composer)
+    second = pop_strider_slice(plan, stride=3, composer=composer)
+    assert first.stride == 3
+    assert second.stride == 1
+    assert len(plan) == 0
+    np.testing.assert_allclose(first.action[:3], [0.6, 0.6, 0.6])
+    np.testing.assert_allclose(second.action, np.full(7, 0.4))
 
 
 def test_strider_server_metadata_is_exact_and_candidate_only():

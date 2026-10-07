@@ -44,8 +44,8 @@ def build_metadata(args: Args) -> dict:
         raise ValueError(
             f"evaluator commit mismatch: expected {args.expected_evaluator_commit}, got {commit}"
         )
-    if args.fast_stride != 2:
-        raise ValueError("registered Strider LIBERO schedule requires fast stride 2")
+    if args.fast_stride not in (2, 3):
+        raise ValueError("registered Strider LIBERO schedule requires fast stride 2 or 3")
     schedule = json.loads(args.phase_schedule.read_text())
     if schedule.get("schema") != "strider-libero-subtask-candidate-v1":
         raise ValueError(f"unsupported phase schedule schema: {schedule.get('schema')!r}")
