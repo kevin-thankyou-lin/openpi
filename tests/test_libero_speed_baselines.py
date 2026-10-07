@@ -340,6 +340,42 @@ def test_strider_candidate_schedule_accepts_registered_stride_three(tmp_path):
     assert task_ids == {2, 3}
 
 
+def test_strider_fine_phase_schedule_slows_only_moka_approach(tmp_path):
+    schedule = tmp_path / "schedule.json"
+    phases = (
+        "task_02:stove_approach",
+        "task_02:stove_toggle",
+        "task_02:moka_approach",
+        "task_02:moka_acquire",
+        "task_02:moka_transport",
+        "task_02:moka_place",
+    )
+    schedule.write_text(
+        json.dumps(
+            {
+                "schema": "strider-libero-task2-fine-phase-schedule-v1",
+                "status": "AI_CANDIDATE_NOT_PROMOTED_OR_EVALUATED",
+                "authority": "AI_CANDIDATE_NOT_HUMAN_ANNOTATION",
+                "requires_human_confirmation": True,
+                "phase_schedule": [
+                    [phase, 1 if phase == "task_02:moka_approach" else 3]
+                    for phase in phases
+                ],
+            }
+        )
+    )
+    speeds, task_ids = load_candidate_schedule(
+        schedule,
+        checkpoint_phases=phases,
+        fast_stride=3,
+    )
+    assert speeds == {
+        phase: 1 if phase == "task_02:moka_approach" else 3
+        for phase in phases
+    }
+    assert task_ids == {2}
+
+
 def test_strider_action_consumption_respects_speed_and_odd_tail(composer):
     plan = collections.deque(np.full(7, value, dtype=np.float64) for value in (0.1, 0.2, 0.3))
     first = pop_strider_slice(plan, stride=2, composer=composer)

@@ -47,8 +47,18 @@ def build_metadata(args: Args) -> dict:
     if args.fast_stride not in (2, 3):
         raise ValueError("registered Strider LIBERO schedule requires fast stride 2 or 3")
     schedule = json.loads(args.phase_schedule.read_text())
-    if schedule.get("schema") != "strider-libero-subtask-candidate-v1":
-        raise ValueError(f"unsupported phase schedule schema: {schedule.get('schema')!r}")
+    schedule_schema = schedule.get("schema")
+    supported_schemas = {
+        "strider-libero-subtask-candidate-v1",
+        "strider-libero-task2-fine-phase-schedule-v1",
+    }
+    if schedule_schema not in supported_schemas:
+        raise ValueError(f"unsupported phase schedule schema: {schedule_schema!r}")
+    if schedule_schema == "strider-libero-task2-fine-phase-schedule-v1":
+        if schedule.get("authority") != AUTHORITY or schedule.get("requires_human_confirmation") is not True:
+            raise ValueError("fine-phase schedule is missing its candidate-only authority gate")
+        if schedule.get("status") != "AI_CANDIDATE_NOT_PROMOTED_OR_EVALUATED":
+            raise ValueError("fine-phase schedule must remain unpromoted before evaluation")
     return {
         "method": "strider_phase_candidate",
         "base_policy": "pi05_libero",
@@ -61,6 +71,7 @@ def build_metadata(args: Args) -> dict:
         "authority": AUTHORITY,
         "requires_human_confirmation": True,
         "speed_schedule_status": "candidate_not_promoted",
+        "phase_schedule_schema": schedule_schema,
     }
 
 

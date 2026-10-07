@@ -13,6 +13,7 @@ from .actions import ActionSlice, SupActionComposer
 
 STRIDER_AUTHORITY = "AI_CANDIDATE_NOT_HUMAN_ANNOTATION"
 STRIDER_SCHEDULE_SCHEMA = "strider-libero-subtask-candidate-v1"
+STRIDER_FINE_SCHEDULE_SCHEMA = "strider-libero-task2-fine-phase-schedule-v1"
 STRIDER_SERVER_METHOD = "strider_phase_candidate"
 
 
@@ -47,23 +48,48 @@ def load_candidate_schedule(
 ) -> tuple[dict[str, int], frozenset[int]]:
     path = pathlib.Path(path)
     payload = json.loads(path.read_text())
-    if payload.get("schema") != STRIDER_SCHEDULE_SCHEMA:
-        raise ValueError(f"unsupported Strider schedule schema: {payload.get('schema')!r}")
-    if payload.get("review_gate") != "non-authoritative until every boundary is visually reviewed":
-        raise ValueError("Strider candidate schedule is missing its non-authoritative review gate")
+    schema = payload.get("schema")
     speeds: dict[str, int] = {}
     task_ids = set()
-    for task_text, task in payload.get("tasks", {}).items():
-        task_id = int(task_text)
-        task_ids.add(task_id)
-        for phase_name, speed in task.get("subtasks", []):
-            key = f"task_{task_id:02d}:{phase_name}"
-            speed = int(speed)
-            if speed < 1 or speed > fast_stride:
-                raise ValueError(f"{key} uses unsupported candidate speed {speed}")
-            if key in speeds:
-                raise ValueError(f"duplicate Strider candidate phase {key}")
-            speeds[key] = speed
+    entries: list[tuple[str, int]] = []
+    if schema == STRIDER_SCHEDULE_SCHEMA:
+        if payload.get("review_gate") != "non-authoritative until every boundary is visually reviewed":
+            raise ValueError("Strider candidate schedule is missing its non-authoritative review gate")
+        for task_text, task in payload.get("tasks", {}).items():
+            task_id = int(task_text)
+            task_ids.add(task_id)
+            entries.extend(
+                (f"task_{task_id:02d}:{phase_name}", speed)
+                for phase_name, speed in task.get("subtasks", [])
+            )
+    elif schema == STRIDER_FINE_SCHEDULE_SCHEMA:
+        if payload.get("authority") != STRIDER_AUTHORITY or payload.get("requires_human_confirmation") is not True:
+            raise ValueError("fine-phase schedule is missing its candidate-only authority gate")
+        if payload.get("status") != "AI_CANDIDATE_NOT_PROMOTED_OR_EVALUATED":
+            raise ValueError("fine-phase schedule must remain unpromoted before evaluation")
+        entries = payload.get("phase_schedule", [])
+        if not entries:
+            raise ValueError("fine-phase schedule has no registered phases")
+    else:
+        raise ValueError(f"unsupported Strider schedule schema: {schema!r}")
+
+    for entry in entries:
+        if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+            raise ValueError(f"invalid Strider phase entry: {entry!r}")
+        key, speed = entry
+        key = str(key)
+        if not key.startswith("task_") or ":" not in key:
+            raise ValueError(f"invalid Strider phase key: {key!r}")
+        try:
+            task_ids.add(int(key.split(":", 1)[0][5:]))
+        except ValueError as exc:
+            raise ValueError(f"invalid Strider phase key: {key!r}") from exc
+        speed = int(speed)
+        if speed < 1 or speed > fast_stride:
+            raise ValueError(f"{key} uses unsupported candidate speed {speed}")
+        if key in speeds:
+            raise ValueError(f"duplicate Strider candidate phase {key}")
+        speeds[key] = speed
     expected = set(checkpoint_phases)
     if set(speeds) != expected:
         missing = sorted(expected - set(speeds))
