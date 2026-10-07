@@ -439,8 +439,8 @@ def _validate_args(args: Args) -> None:
         raise ValueError("task_start must be nonnegative")
     if args.task_count is not None and args.task_count < 1:
         raise ValueError("task_count must be positive when provided")
-    if args.method == "uniform" and args.uniform_stride != 2:
-        raise ValueError("paper LIBERO uniform baseline requires stride 2")
+    if args.method == "uniform" and args.uniform_stride not in (2, 3):
+        raise ValueError("registered LIBERO uniform candidate requires stride 2 or 3")
     if args.method in ("sup", "sail") and args.fast_stride != 2:
         raise ValueError("paper LIBERO accelerated methods require fast stride 2")
     if args.method == "strider":

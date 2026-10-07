@@ -49,6 +49,14 @@ def test_uniform_stride_two_keeps_odd_tail(composer):
     np.testing.assert_allclose([item.action[0] for item in slices], [0.2, 0.2, 0.1])
 
 
+def test_uniform_stride_three_keeps_short_tail(composer):
+    actions = np.zeros((5, 7))
+    actions[:, 0] = 0.1
+    slices = uniform_slices(actions, stride=3, composer=composer)
+    assert [item.source_indices for item in slices] == [(0, 1, 2), (3, 4)]
+    np.testing.assert_allclose([item.action[0] for item in slices], [0.3, 0.2])
+
+
 def test_composer_broadcasts_scalar_input_range():
     composer = SupActionComposer(
         input_min=-1,
