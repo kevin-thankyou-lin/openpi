@@ -59,7 +59,7 @@ def load_candidate_schedule(
         for phase_name, speed in task.get("subtasks", []):
             key = f"task_{task_id:02d}:{phase_name}"
             speed = int(speed)
-            if speed not in (1, fast_stride):
+            if speed < 1 or speed > fast_stride:
                 raise ValueError(f"{key} uses unsupported candidate speed {speed}")
             if key in speeds:
                 raise ValueError(f"duplicate Strider candidate phase {key}")

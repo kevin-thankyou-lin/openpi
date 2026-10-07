@@ -306,17 +306,30 @@ def test_strider_candidate_schedule_accepts_registered_stride_three(tmp_path):
             {
                 "schema": "strider-libero-subtask-candidate-v1",
                 "review_gate": "non-authoritative until every boundary is visually reviewed",
-                "tasks": {"2": {"subtasks": [["approach", 3], ["contact", 1]]}},
+                "tasks": {
+                    "2": {"subtasks": [["approach", 3], ["contact", 1]]},
+                    "3": {"subtasks": [["approach", 2], ["contact", 1]]},
+                },
             }
         )
     )
     speeds, task_ids = load_candidate_schedule(
         schedule,
-        checkpoint_phases=("task_02:approach", "task_02:contact"),
+        checkpoint_phases=(
+            "task_02:approach",
+            "task_02:contact",
+            "task_03:approach",
+            "task_03:contact",
+        ),
         fast_stride=3,
     )
-    assert speeds == {"task_02:approach": 3, "task_02:contact": 1}
-    assert task_ids == {2}
+    assert speeds == {
+        "task_02:approach": 3,
+        "task_02:contact": 1,
+        "task_03:approach": 2,
+        "task_03:contact": 1,
+    }
+    assert task_ids == {2, 3}
 
 
 def test_strider_action_consumption_respects_speed_and_odd_tail(composer):
