@@ -15,7 +15,6 @@ import tyro
 from .main import Args as EvalArgs
 from .main import eval_speed_baseline
 
-
 ALLOWED_SPEEDS = frozenset({1.0, 1.5, 2.0, 3.0})
 
 
