@@ -75,7 +75,7 @@ def load_candidate_schedule(
         raise ValueError(f"unsupported Strider schedule schema: {schema!r}")
 
     for entry in entries:
-        if not isinstance(entry, list | tuple) or len(entry) != 2:
+        if not isinstance(entry, (list, tuple)) or len(entry) != 2:  # noqa: UP038
             raise ValueError(f"invalid Strider phase entry: {entry!r}")
         key, speed = entry
         key = str(key)
@@ -224,8 +224,7 @@ class StriderPhaseSelector:
         for action, provenance in zip(
             result.scheduled_actions,
             result.transformed.scheduled.provenance,
-            strict=True,
-        ):
+        ):  # noqa: B905
             indices = tuple(provenance["source_indices"])
             scheduled.append(
                 ActionSlice(

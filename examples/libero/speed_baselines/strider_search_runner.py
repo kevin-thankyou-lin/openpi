@@ -55,7 +55,7 @@ def render_libero_schedule(source: pathlib.Path, destination: pathlib.Path) -> d
     speeds: dict[str, int] = {}
     for phase in PHASES:
         value = raw[phase]
-        if isinstance(value, bool) or not isinstance(value, int | float):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):  # noqa: UP038
             raise ValueError(f"speed for {phase!r} must be numeric")
         speed = int(value)
         if float(value) != speed or speed not in ALLOWED_SPEEDS:
