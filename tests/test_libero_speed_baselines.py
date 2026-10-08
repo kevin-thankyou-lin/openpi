@@ -395,6 +395,43 @@ def test_strider_fine_phase_schedule_slows_only_moka_approach(tmp_path):
     assert task_ids == {2}
 
 
+def test_strider_fine_phase_schedule_accepts_half_step_speed(tmp_path):
+    schedule = tmp_path / "schedule.json"
+    phases = (
+        "task_02:stove_approach",
+        "task_02:stove_toggle",
+        "task_02:moka_approach",
+        "task_02:moka_acquire",
+        "task_02:moka_transport",
+        "task_02:moka_place",
+    )
+    schedule.write_text(
+        json.dumps(
+            {
+                "schema": "strider-libero-task2-fine-phase-schedule-v1",
+                "status": "AI_CANDIDATE_NOT_PROMOTED_OR_EVALUATED",
+                "authority": "AI_CANDIDATE_NOT_HUMAN_ANNOTATION",
+                "requires_human_confirmation": True,
+                "phase_schedule": [
+                    [phase, 1.5 if phase == "task_02:moka_approach" else 3]
+                    for phase in phases
+                ],
+            }
+        )
+    )
+
+    speeds, task_ids = load_candidate_schedule(
+        schedule,
+        checkpoint_phases=phases,
+        fast_stride=3,
+    )
+
+    assert speeds == {
+        phase: 1.5 if phase == "task_02:moka_approach" else 3.0 for phase in phases
+    }
+    assert task_ids == {2}
+
+
 def test_strider_action_consumption_respects_speed_and_odd_tail(composer):
     plan = collections.deque(np.full(7, value, dtype=np.float64) for value in (0.1, 0.2, 0.3))
     first = pop_strider_slice(plan, stride=2, composer=composer)
@@ -484,9 +521,80 @@ def test_horizon_strider_plans_once_without_crossing_protected_phase(tmp_path, c
     assert [item.source_indices for item in slices] == [(0, 1, 2), (3,), (4, 5)]
     assert decision["speed_factors"] == [3.0, 3.0, 3.0, 1.0, 3.0, 3.0]
     assert decision["coverage_steps"] == 3
-    assert decision["pipeline_stages"] == ["boundary_aware_stride_retimer"]
+    assert decision["pipeline_stages"] == ["boundary_aware_cadence_retimer"]
     assert decision["used_fallback"] is False
     assert decision["fallback_indices"] == []
+
+
+def test_horizon_strider_materializes_half_step_as_whole_action_cadence(tmp_path, composer):
+    import strider
+
+    phases = (
+        "stove_approach",
+        "stove_toggle",
+        "moka_approach",
+        "moka_acquire",
+        "moka_transport",
+        "moka_place",
+    )
+    schedule = tmp_path / "schedule.json"
+    schedule.write_text(
+        json.dumps(
+            {
+                "schema": "strider-libero-task2-fine-phase-schedule-v1",
+                "status": "AI_CANDIDATE_NOT_PROMOTED_OR_EVALUATED",
+                "authority": "AI_CANDIDATE_NOT_HUMAN_ANNOTATION",
+                "requires_human_confirmation": True,
+                "phase_schedule": [
+                    [f"task_02:{phase}", 1.5 if phase == "moka_approach" else 3]
+                    for phase in phases
+                ],
+            }
+        )
+    )
+
+    class Predictor:
+        class_names = phases
+        history_length = 4
+        horizon = 6
+
+        def predict(self, observation_history):
+            assert len(observation_history) == 1
+            labels = ("moka_approach",) * 6
+            probabilities = tuple(
+                tuple(1.0 if name == label else 0.0 for name in phases) for label in labels
+            )
+            return strider.SubtaskPrediction(
+                probabilities=probabilities,
+                class_names=phases,
+                valid=(True,) * 6,
+            )
+
+    selector = StriderPhaseSelector(
+        checkpoint=tmp_path / "unused.pt",
+        phase_repo=tmp_path,
+        schedule=schedule,
+        fast_stride=3,
+        device="cpu",
+        predictor_factory=lambda *_args, **_kwargs: Predictor(),
+        composer=composer,
+    )
+    selector.observe(
+        np.zeros((84, 84, 3), dtype=np.uint8),
+        {
+            "robot0_joint_pos": np.zeros(7),
+            "robot0_gripper_qpos": np.zeros(2),
+        },
+    )
+
+    slices, decision = selector.plan(np.zeros((6, 7)), task_id=2)
+
+    assert [item.source_indices for item in slices] == [(0,), (1, 2), (3,), (4, 5)]
+    assert [item.metadata["requested_stride"] for item in slices] == [1.5] * 4
+    assert [item.metadata["actual_stride"] for item in slices] == [1, 2, 1, 2]
+    assert decision["speed_factors"] == [1.5] * 6
+    assert decision["coverage_steps"] == 4
+    assert decision["pipeline_stages"] == ["boundary_aware_cadence_retimer"]
 
 
 def test_strider_server_metadata_is_exact_and_candidate_only():
@@ -541,7 +649,7 @@ def test_search_runner_renders_plain_schedule_for_task2(tmp_path):
     [
         ({phase: 1 for phase in PHASES[:-1]}, "phase mismatch"),
         ({**{phase: 1 for phase in PHASES}, "extra": 1}, "phase mismatch"),
-        ({phase: 1.5 if phase == PHASES[0] else 1 for phase in PHASES}, "must be one of"),
+        ({phase: 1.25 if phase == PHASES[0] else 1 for phase in PHASES}, "must be one of"),
         ({phase: 4 if phase == PHASES[0] else 1 for phase in PHASES}, "must be one of"),
     ],
 )

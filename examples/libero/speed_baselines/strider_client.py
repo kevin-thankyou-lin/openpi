@@ -4,6 +4,7 @@ import collections
 from collections.abc import Callable
 import importlib
 import json
+import math
 import pathlib
 import sys
 from typing import Any
@@ -47,13 +48,13 @@ def proprio_from_obs(obs: dict[str, Any]) -> np.ndarray:
 
 def load_candidate_schedule(
     path: pathlib.Path, *, checkpoint_phases: tuple[str, ...], fast_stride: int
-) -> tuple[dict[str, int], frozenset[int]]:
+) -> tuple[dict[str, float], frozenset[int]]:
     path = pathlib.Path(path)
     payload = json.loads(path.read_text())
     schema = payload.get("schema")
-    speeds: dict[str, int] = {}
+    speeds: dict[str, float] = {}
     task_ids = set()
-    entries: list[tuple[str, int]] = []
+    entries: list[tuple[str, float]] = []
     if schema == STRIDER_SCHEDULE_SCHEMA:
         if payload.get("review_gate") != "non-authoritative until every boundary is visually reviewed":
             raise ValueError("Strider candidate schedule is missing its non-authoritative review gate")
@@ -85,8 +86,15 @@ def load_candidate_schedule(
             task_ids.add(int(key.split(":", 1)[0][5:]))
         except ValueError as exc:
             raise ValueError(f"invalid Strider phase key: {key!r}") from exc
-        speed = int(speed)
-        if speed < 1 or speed > fast_stride:
+        if isinstance(speed, bool) or not isinstance(speed, (int, float)):
+            raise ValueError(f"{key} uses non-numeric candidate speed {speed!r}")
+        speed = float(speed)
+        if (
+            not math.isfinite(speed)
+            or speed < 1.0
+            or speed > fast_stride
+            or not (speed * 2.0).is_integer()
+        ):
             raise ValueError(f"{key} uses unsupported candidate speed {speed}")
         if key in speeds:
             raise ValueError(f"duplicate Strider candidate phase {key}")
@@ -192,9 +200,9 @@ class StriderPhaseSelector:
                 minimum_confidence=0.0,
             ),
             pipeline=strider.PlanPipeline(
-                retimer=strider.BoundaryAwareStrideRetimer(
+                retimer=strider.BoundaryAwareCadenceRetimer(
                     LiberoActionComposer(),
-                    allowed_speeds=tuple(range(1, fast_stride + 1)),
+                    allowed_speeds=(1.0, 1.5, 2.0, 3.0),
                 )
             ),
         )
