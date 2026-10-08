@@ -221,10 +221,10 @@ class StriderPhaseSelector:
         confidence = result.metadata["subtask_confidence"]
         task_match = tuple(phase in self.phase_speeds for phase in phases)
         scheduled = []
-        for action, provenance in zip(
+        for action, provenance in zip(  # noqa: B905
             result.scheduled_actions,
             result.transformed.scheduled.provenance,
-        ):  # noqa: B905
+        ):
             indices = tuple(provenance["source_indices"])
             scheduled.append(
                 ActionSlice(
