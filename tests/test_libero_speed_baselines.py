@@ -8,6 +8,7 @@ from scipy.spatial.transform import Rotation
 from examples.libero.speed_baselines.actions import SupActionComposer
 from examples.libero.speed_baselines.actions import phase_speed_slices
 from examples.libero.speed_baselines.actions import sail_precision_slices
+from examples.libero.speed_baselines.actions import uniform_cadence_slices
 from examples.libero.speed_baselines.actions import uniform_slices
 from examples.libero.speed_baselines.result_utils import atomic_write_json
 from examples.libero.speed_baselines.result_utils import summarize_episodes
@@ -65,6 +66,15 @@ def test_uniform_stride_three_keeps_short_tail(composer):
     slices = uniform_slices(actions, stride=3, composer=composer)
     assert [item.source_indices for item in slices] == [(0, 1, 2), (3, 4)]
     np.testing.assert_allclose([item.action[0] for item in slices], [0.3, 0.2])
+
+
+def test_uniform_one_point_five_uses_whole_action_cadence(composer):
+    actions = np.zeros((6, 7))
+    actions[:, 0] = 0.1
+    slices = uniform_cadence_slices(actions, speed=1.5, composer=composer)
+    assert [item.source_indices for item in slices] == [(0,), (1, 2), (3,), (4, 5)]
+    assert [item.metadata["requested_speed"] for item in slices] == [1.5] * 4
+    np.testing.assert_allclose([item.action[0] for item in slices], [0.1, 0.2, 0.1, 0.2])
 
 
 def test_composer_broadcasts_scalar_input_range():
@@ -519,6 +529,66 @@ def test_horizon_strider_plans_once_without_crossing_protected_phase(tmp_path, c
     assert decision["pipeline_stages"] == ["boundary_aware_cadence_retimer"]
     assert decision["used_fallback"] is False
     assert decision["fallback_indices"] == []
+
+
+def test_horizon_strider_supports_task3_schedule(tmp_path, composer):
+    import strider
+
+    phases = ("bowl_approach", "bowl_acquire", "bowl_transport", "bowl_place", "drawer_close")
+    schedule = tmp_path / "schedule.json"
+    schedule.write_text(
+        json.dumps(
+            {
+                "schema": "strider-libero-task-fine-phase-schedule-v1",
+                "status": "AI_CANDIDATE_NOT_PROMOTED_OR_EVALUATED",
+                "authority": "AI_CANDIDATE_NOT_HUMAN_ANNOTATION",
+                "requires_human_confirmation": True,
+                "phase_schedule": [[f"task_03:{phase}", 2] for phase in phases],
+            }
+        )
+    )
+
+    class Predictor:
+        class_names = phases
+        history_length = 4
+        horizon = 5
+
+        def predict(self, observation_history):
+            labels = phases
+            return strider.SubtaskPrediction(
+                probabilities=tuple(tuple(1.0 if name == label else 0.0 for name in phases) for label in labels),
+                class_names=phases,
+                valid=(True,) * 5,
+            )
+
+    selector = StriderPhaseSelector(
+        checkpoint=tmp_path / "unused.pt",
+        phase_repo=tmp_path,
+        schedule=schedule,
+        fast_stride=3,
+        device="cpu",
+        predictor_factory=lambda *_args, **_kwargs: Predictor(),
+        composer=composer,
+    )
+    selector.observe(
+        np.zeros((84, 84, 3), dtype=np.uint8),
+        {"robot0_joint_pos": np.zeros(7), "robot0_gripper_qpos": np.zeros(2)},
+    )
+    _slices, decision = selector.plan(np.zeros((5, 7)), task_id=3)
+    assert decision["predicted_phases"] == [f"task_03:{phase}" for phase in phases]
+
+
+def test_search_runner_renders_task3_schedule(tmp_path):
+    phases = ("bowl_approach", "bowl_acquire", "bowl_transport", "bowl_place", "drawer_close")
+    source = tmp_path / "schedule.json"
+    source.write_text(json.dumps({phase: 2 for phase in phases}))
+    destination = tmp_path / "libero_schedule.json"
+
+    payload = render_libero_schedule(source, destination, task_id=3, phases=phases)
+
+    assert payload["schema"] == "strider-libero-task-fine-phase-schedule-v1"
+    assert payload["task_id"] == 3
+    assert payload["phase_schedule"] == [[f"task_03:{phase}", 2] for phase in phases]
 
 
 def test_strider_server_metadata_is_exact_and_candidate_only():

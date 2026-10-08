@@ -40,22 +40,30 @@ class Args:
     server_start_timeout_seconds: float = 180.0
     num_trials: int = 5
     seed: int = 7
+    task_id: int = TASK_ID
+    phase_names: str = ",".join(PHASES)
 
 
-def render_libero_schedule(source: pathlib.Path, destination: pathlib.Path) -> dict[str, Any]:
-    """Validate STRIDER's plain schedule and render the Task-2 evaluator schema."""
+def render_libero_schedule(
+    source: pathlib.Path,
+    destination: pathlib.Path,
+    *,
+    task_id: int = TASK_ID,
+    phases: tuple[str, ...] = PHASES,
+) -> dict[str, Any]:
+    """Validate STRIDER's plain schedule and render one LIBERO task schema."""
 
     source = pathlib.Path(source)
     raw = json.loads(source.read_text())
     if not isinstance(raw, dict):
         raise ValueError("STRIDER schedule must be a JSON object")
-    if set(raw) != set(PHASES):
-        missing = sorted(set(PHASES) - set(raw))
-        extra = sorted(set(raw) - set(PHASES))
-        raise ValueError(f"Task-2 schedule phase mismatch: missing={missing} extra={extra}")
+    if set(raw) != set(phases):
+        missing = sorted(set(phases) - set(raw))
+        extra = sorted(set(raw) - set(phases))
+        raise ValueError(f"task schedule phase mismatch: missing={missing} extra={extra}")
 
     speeds: dict[str, float] = {}
-    for phase in PHASES:
+    for phase in phases:
         value = raw[phase]
         if isinstance(value, bool) or not isinstance(value, (int, float)):  # noqa: UP038
             raise ValueError(f"speed for {phase!r} must be numeric")
@@ -65,16 +73,18 @@ def render_libero_schedule(source: pathlib.Path, destination: pathlib.Path) -> d
         speeds[phase] = speed
 
     payload = {
-        "schema": SCHEDULE_SCHEMA,
+        "schema": (
+            SCHEDULE_SCHEMA if task_id == TASK_ID and phases == PHASES else "strider-libero-task-fine-phase-schedule-v1"
+        ),
         "status": "AI_CANDIDATE_NOT_PROMOTED_OR_EVALUATED",
         "authority": AUTHORITY,
         "requires_human_confirmation": True,
-        "task_id": TASK_ID,
+        "task_id": task_id,
         "candidate_speed_set": sorted(ALLOWED_SPEEDS),
         "maximum_stride": FAST_STRIDE,
         "source_schedule": str(source.resolve()),
         "source_schedule_sha256": _sha256(source),
-        "phase_schedule": [[f"task_{TASK_ID:02d}:{phase}", speeds[phase]] for phase in PHASES],
+        "phase_schedule": [[f"task_{task_id:02d}:{phase}", speeds[phase]] for phase in phases],
     }
     _write_json_once(destination, payload)
     return payload
@@ -127,7 +137,13 @@ def run(args: Args) -> None:
         num_trials=args.num_trials,
     )
     rendered_schedule = args.run_dir / "libero_schedule.json"
-    render_libero_schedule(args.schedule, rendered_schedule)
+    phases = tuple(item.strip() for item in args.phase_names.split(",") if item.strip())
+    render_libero_schedule(
+        args.schedule,
+        rendered_schedule,
+        task_id=args.task_id,
+        phases=phases,
+    )
     server_log_path = args.run_dir / "server.log"
     server_command = build_server_command(args, rendered_schedule=rendered_schedule, commit=commit)
 
@@ -162,7 +178,7 @@ def run(args: Args) -> None:
                     host=args.server_host,
                     port=args.server_port,
                     task_suite_name="libero_10",
-                    task_start=TASK_ID,
+                    task_start=args.task_id,
                     task_count=1,
                     num_trials_per_task=args.num_trials,
                     seed=args.seed,
@@ -193,6 +209,11 @@ def _validate_args(args: Args) -> None:
         raise ValueError("server_port must be within 1..65535")
     if args.server_start_timeout_seconds <= 0:
         raise ValueError("server_start_timeout_seconds must be positive")
+    if args.task_id < 0:
+        raise ValueError("task_id must be nonnegative")
+    phases = tuple(item.strip() for item in args.phase_names.split(",") if item.strip())
+    if not phases or len(set(phases)) != len(phases):
+        raise ValueError("phase_names must contain unique comma-separated names")
 
 
 def _wait_for_server(

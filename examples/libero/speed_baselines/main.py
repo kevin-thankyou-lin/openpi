@@ -12,7 +12,8 @@ import subprocess
 from typing import Literal, Optional
 
 import imageio
-from libero.libero import benchmark, get_libero_path
+from libero.libero import benchmark
+from libero.libero import get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
 import numpy as np
 from openpi_client import image_tools
@@ -20,17 +21,21 @@ from openpi_client import websocket_client_policy
 import tqdm
 import tyro
 
-from .actions import SupActionComposer, native_slices, sail_precision_slices, uniform_slices
+from .actions import SupActionComposer
+from .actions import native_slices
+from .actions import sail_precision_slices
+from .actions import uniform_cadence_slices
+from .actions import uniform_slices
 from .controller import apply_sup_controller_patches
-from .result_utils import atomic_write_json, summarize_episodes, summarize_tasks
+from .result_utils import atomic_write_json
+from .result_utils import summarize_episodes
+from .result_utils import summarize_tasks
 from .selector_client import SupSelectorClient
-from .strider_client import (
-    STRIDER_AUTHORITY,
-    StriderPhaseSelector,
-    validate_strider_server_metadata,
-)
-from .telemetry import record_from_obs, write_episode
-
+from .strider_client import STRIDER_AUTHORITY
+from .strider_client import StriderPhaseSelector
+from .strider_client import validate_strider_server_metadata
+from .telemetry import record_from_obs
+from .telemetry import write_episode
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256
@@ -58,7 +63,7 @@ class Args:
     resize_size: int = 224
     chunk_size: int = 10
     num_steps_wait: int = 10
-    uniform_stride: int = 2
+    uniform_stride: float = 2.0
     selector_host: str = "127.0.0.1"
     selector_port: int = 8888
     precision_threshold: float = 0.5
@@ -336,8 +341,15 @@ def _schedule_actions(actions, response, state, args, composer, selector):
     if args.method == "native":
         return native_slices(actions), {"selected_k": 1, "slice_strides": [1] * len(actions)}
     if args.method == "uniform":
-        slices = uniform_slices(actions, stride=args.uniform_stride, composer=composer)
-        return slices, {"selected_k": args.uniform_stride, "slice_strides": [item.stride for item in slices]}
+        if float(args.uniform_stride).is_integer():
+            slices = uniform_slices(actions, stride=int(args.uniform_stride), composer=composer)
+        else:
+            slices = uniform_cadence_slices(actions, speed=args.uniform_stride, composer=composer)
+        return slices, {
+            "selected_k": args.uniform_stride,
+            "requested_speed": args.uniform_stride,
+            "slice_strides": [item.stride for item in slices],
+        }
     if args.method == "sup":
         assert selector is not None
         selected_k = selector.predict_k(state, actions)
@@ -438,8 +450,8 @@ def _validate_args(args: Args) -> None:
         raise ValueError("task_start must be nonnegative")
     if args.task_count is not None and args.task_count < 1:
         raise ValueError("task_count must be positive when provided")
-    if args.method == "uniform" and args.uniform_stride not in (2, 3):
-        raise ValueError("registered LIBERO uniform candidate requires stride 2 or 3")
+    if args.method == "uniform" and float(args.uniform_stride) not in (1.0, 1.5, 2.0, 3.0):
+        raise ValueError("registered LIBERO uniform candidate requires speed 1, 1.5, 2, or 3")
     if args.method in ("sup", "sail") and args.fast_stride != 2:
         raise ValueError("paper LIBERO accelerated methods require fast stride 2")
     if args.method == "strider":

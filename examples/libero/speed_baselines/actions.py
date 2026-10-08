@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import math
 from typing import Any
 
 import numpy as np
@@ -112,6 +113,51 @@ def uniform_slices(
         group = actions[start:stop]
         merged = group[0].copy() if len(group) == 1 else composer.merge(group)
         result.append(ActionSlice(merged, indices))
+    return result
+
+
+def uniform_cadence_slices(
+    actions: np.ndarray,
+    *,
+    speed: float,
+    composer: SupActionComposer,
+) -> list[ActionSlice]:
+    """Materialize a fractional speed as a deterministic whole-action cadence.
+
+    LIBERO OSC delta actions do not have a validated partial-action contract, so
+    a requested speed such as 1.5 consumes whole actions in a 1, 2, 1, 2, ...
+    cadence. The final group may be shorter at the policy-horizon boundary.
+    """
+
+    actions = _validate_actions(actions)
+    speed = float(speed)
+    if not math.isfinite(speed) or speed < 1.0:
+        raise ValueError(f"speed must be finite and >= 1, got {speed}")
+
+    result: list[ActionSlice] = []
+    index = 0
+    remainder = 0.0
+    while index < len(actions):
+        accumulated = speed + remainder
+        requested_stride = max(1, math.floor(accumulated + 1e-9))
+        remainder = accumulated - requested_stride
+        stop = min(index + requested_stride, len(actions))
+        indices = tuple(range(index, stop))
+        group = actions[index:stop]
+        merged = group[0].copy() if len(group) == 1 else composer.merge(group)
+        result.append(
+            ActionSlice(
+                merged,
+                indices,
+                metadata={
+                    "requested_speed": speed,
+                    "requested_stride": requested_stride,
+                    "actual_stride": len(indices),
+                    "truncated_at_horizon": len(indices) < requested_stride,
+                },
+            )
+        )
+        index = stop
     return result
 
 

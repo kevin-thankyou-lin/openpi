@@ -16,6 +16,7 @@ from .actions import SupActionComposer
 STRIDER_AUTHORITY = "AI_CANDIDATE_NOT_HUMAN_ANNOTATION"
 STRIDER_SCHEDULE_SCHEMA = "strider-libero-subtask-candidate-v1"
 STRIDER_FINE_SCHEDULE_SCHEMA = "strider-libero-task2-fine-phase-schedule-v1"
+STRIDER_TASK_FINE_SCHEDULE_SCHEMA = "strider-libero-task-fine-phase-schedule-v1"
 STRIDER_SERVER_METHOD = "strider_phase_candidate"
 STRIDER_ALLOWED_SPEEDS = frozenset({1.0, 1.5, 2.0, 3.0})
 
@@ -64,7 +65,7 @@ def load_candidate_schedule(
             entries.extend(
                 (f"task_{task_id:02d}:{phase_name}", speed) for phase_name, speed in task.get("subtasks", [])
             )
-    elif schema == STRIDER_FINE_SCHEDULE_SCHEMA:
+    elif schema in (STRIDER_FINE_SCHEDULE_SCHEMA, STRIDER_TASK_FINE_SCHEDULE_SCHEMA):
         if payload.get("authority") != STRIDER_AUTHORITY or payload.get("requires_human_confirmation") is not True:
             raise ValueError("fine-phase schedule is missing its candidate-only authority gate")
         if payload.get("status") != "AI_CANDIDATE_NOT_PROMOTED_OR_EVALUATED":
@@ -167,14 +168,24 @@ class StriderPhaseSelector:
             model_module = importlib.import_module("strider.subtask_model")
             predictor_factory = model_module.TorchObservationHistorySubtaskPredictor.from_checkpoint
         self.predictor = predictor_factory(checkpoint, device=device)
-        checkpoint_phases = tuple(f"task_02:{name}" for name in self.predictor.class_names)
+        schedule_payload = json.loads(schedule.read_text())
+        phase_entries = schedule_payload.get("phase_schedule", [])
+        task_ids = {
+            int(str(entry[0]).split(":", 1)[0][5:])
+            for entry in phase_entries
+            if isinstance(entry, (list, tuple)) and len(entry) == 2
+        }
+        if len(task_ids) != 1:
+            raise ValueError("horizon evaluator requires exactly one task in the schedule")
+        self.task_id = next(iter(task_ids))
+        checkpoint_phases = tuple(f"task_{self.task_id:02d}:{name}" for name in self.predictor.class_names)
         self.phase_speeds, self.affected_task_ids = load_candidate_schedule(
             schedule,
             checkpoint_phases=checkpoint_phases,
             fast_stride=fast_stride,
         )
-        if self.affected_task_ids != {2}:
-            raise ValueError("horizon Task-2 evaluator requires exactly task 2 in the schedule")
+        if self.affected_task_ids != {self.task_id}:
+            raise ValueError("horizon evaluator schedule task identity is inconsistent")
         self.fast_stride = fast_stride
         self._observations: list[dict[str, np.ndarray]] = []
         self._composer = composer or SupActionComposer.from_robosuite()
@@ -210,8 +221,8 @@ class StriderPhaseSelector:
         self._observations = self._observations[-int(self.predictor.history_length) :]
 
     def plan(self, actions: np.ndarray, *, task_id: int) -> tuple[list[ActionSlice], dict[str, Any]]:
-        if task_id != 2:
-            raise ValueError(f"horizon Task-2 evaluator received task {task_id}")
+        if task_id != self.task_id:
+            raise ValueError(f"horizon evaluator expected task {self.task_id}, received task {task_id}")
         result = self.runtime.plan(
             self._observations,
             tuple(np.asarray(action, dtype=np.float64) for action in actions),
@@ -220,7 +231,9 @@ class StriderPhaseSelector:
                 "schedule_source": "horizon_ai_candidate_not_promoted",
             },
         )
-        phases = tuple(None if label is None else f"task_02:{label}" for label in result.metadata["subtask_labels"])
+        phases = tuple(
+            None if label is None else f"task_{self.task_id:02d}:{label}" for label in result.metadata["subtask_labels"]
+        )
         confidence = result.metadata["subtask_confidence"]
         task_match = tuple(phase in self.phase_speeds for phase in phases)
         scheduled = []

@@ -8,12 +8,10 @@ import pathlib
 import socket
 import subprocess
 
+import serve_policy
 import tyro
 
 from openpi.serving import websocket_policy_server
-
-import serve_policy
-
 
 AUTHORITY = "AI_CANDIDATE_NOT_HUMAN_ANNOTATION"
 
@@ -37,13 +35,9 @@ def sha256_file(path: pathlib.Path) -> str:
 
 def build_metadata(args: Args) -> dict:
     repo = pathlib.Path(__file__).resolve().parents[1]
-    commit = subprocess.check_output(
-        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
-    ).strip()
+    commit = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
     if commit != args.expected_evaluator_commit:
-        raise ValueError(
-            f"evaluator commit mismatch: expected {args.expected_evaluator_commit}, got {commit}"
-        )
+        raise ValueError(f"evaluator commit mismatch: expected {args.expected_evaluator_commit}, got {commit}")
     if args.fast_stride not in (2, 3):
         raise ValueError("registered Strider LIBERO schedule requires fast stride 2 or 3")
     schedule = json.loads(args.phase_schedule.read_text())
@@ -51,10 +45,14 @@ def build_metadata(args: Args) -> dict:
     supported_schemas = {
         "strider-libero-subtask-candidate-v1",
         "strider-libero-task2-fine-phase-schedule-v1",
+        "strider-libero-task-fine-phase-schedule-v1",
     }
     if schedule_schema not in supported_schemas:
         raise ValueError(f"unsupported phase schedule schema: {schedule_schema!r}")
-    if schedule_schema == "strider-libero-task2-fine-phase-schedule-v1":
+    if schedule_schema in {
+        "strider-libero-task2-fine-phase-schedule-v1",
+        "strider-libero-task-fine-phase-schedule-v1",
+    }:
         if schedule.get("authority") != AUTHORITY or schedule.get("requires_human_confirmation") is not True:
             raise ValueError("fine-phase schedule is missing its candidate-only authority gate")
         if schedule.get("status") != "AI_CANDIDATE_NOT_PROMOTED_OR_EVALUATED":
