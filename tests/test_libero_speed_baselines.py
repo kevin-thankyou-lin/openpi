@@ -481,7 +481,9 @@ def test_horizon_strider_plans_once_without_crossing_protected_phase(tmp_path, c
     assert [item.source_indices for item in slices] == [(0, 1, 2), (3,), (4, 5)]
     assert decision["speed_factors"] == [3.0, 3.0, 3.0, 1.0, 3.0, 3.0]
     assert decision["coverage_steps"] == 3
-    assert decision["pipeline_stages"] == ["libero_phase_speed_retimer"]
+    assert decision["pipeline_stages"] == ["boundary_aware_stride_retimer"]
+    assert decision["used_fallback"] is False
+    assert decision["fallback_indices"] == []
 
 
 def test_strider_server_metadata_is_exact_and_candidate_only():

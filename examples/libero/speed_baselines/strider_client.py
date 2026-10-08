@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import collections
-import dataclasses
 import importlib
 import json
 import pathlib
@@ -10,7 +9,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from .actions import ActionSlice, SupActionComposer, phase_speed_slices
+from .actions import ActionSlice, SupActionComposer
 
 
 STRIDER_AUTHORITY = "AI_CANDIDATE_NOT_HUMAN_ANNOTATION"
@@ -176,51 +175,27 @@ class StriderPhaseSelector:
         self._observations: list[dict[str, np.ndarray]] = []
         self._composer = composer or SupActionComposer.from_robosuite()
 
-        selector = self
-        composer_instance = self._composer
+        phase_speeds = {
+            key.split(":", 1)[1]: float(speed) for key, speed in self.phase_speeds.items()
+        }
 
-        class RegisteredSchedule:
-            def decide(self, prediction):
-                phase_keys = tuple(f"task_02:{label}" for label in prediction.labels)
-                missing = [key for key in phase_keys if key not in selector.phase_speeds]
-                if missing:
-                    raise ValueError(f"predictor returned unregistered phases {missing}")
-                return strider.SpeedDecision(
-                    factors=tuple(float(selector.phase_speeds[key]) for key in phase_keys),
-                    metadata={
-                        "phase_keys": phase_keys,
-                        "phase_confidence": prediction.confidence,
-                        "phase_task_match": tuple(key.startswith("task_02:") for key in phase_keys),
-                        "schedule_source": "horizon_ai_candidate_not_promoted",
-                    },
-                )
-
-        class LiberoRetimer:
-            name = "libero_phase_speed_retimer"
-
-            def retime(self, plan, *, context):
-                del context
-                slices = phase_speed_slices(
-                    np.asarray(plan.actions, dtype=np.float64),
-                    np.asarray(plan.speed_factors, dtype=np.float64),
-                    composer=composer_instance,
-                )
-                provenance = tuple(
-                    {
-                        "source_indices": item.source_indices,
-                        "requested_stride": item.metadata["requested_stride"],
-                    }
-                    for item in slices
-                )
-                return strider.RetimeResult(
-                    decoded=plan,
-                    scheduled=strider.ScheduledPlan(actions=tuple(slices), provenance=provenance),
-                )
+        class LiberoActionComposer:
+            def compose(_self, actions):
+                return self._composer.merge(np.asarray(actions, dtype=np.float64))
 
         self.runtime = strider.StriderRuntime(
             predictor=self.predictor,
-            schedule=RegisteredSchedule(),
-            pipeline=strider.PlanPipeline(retimer=LiberoRetimer()),
+            schedule=strider.PhaseSpeedSchedule(
+                phase_speeds,
+                fallback_speed=1.0,
+                minimum_confidence=0.0,
+            ),
+            pipeline=strider.PlanPipeline(
+                retimer=strider.BoundaryAwareStrideRetimer(
+                    LiberoActionComposer(),
+                    allowed_speeds=tuple(range(1, fast_stride + 1)),
+                )
+            ),
         )
 
     def reset_episode(self) -> None:
@@ -236,19 +211,32 @@ class StriderPhaseSelector:
         result = self.runtime.plan(
             self._observations,
             tuple(np.asarray(action, dtype=np.float64) for action in actions),
-            metadata={"task_id": task_id},
+            metadata={
+                "task_id": task_id,
+                "schedule_source": "horizon_ai_candidate_not_promoted",
+            },
         )
-        phases = result.metadata["phase_keys"]
+        phases = tuple(
+            None if label is None else f"task_02:{label}"
+            for label in result.metadata["phase_labels"]
+        )
         confidence = result.metadata["phase_confidence"]
-        task_match = result.metadata["phase_task_match"]
+        task_match = tuple(phase in self.phase_speeds for phase in phases)
         scheduled = []
-        for action_slice in result.scheduled_actions:
-            indices = action_slice.source_indices
+        for action, provenance in zip(
+            result.scheduled_actions,
+            result.transformed.scheduled.provenance,
+        ):
+            indices = tuple(provenance["source_indices"])
             scheduled.append(
-                dataclasses.replace(
-                    action_slice,
+                ActionSlice(
+                    action=np.asarray(action, dtype=np.float64),
+                    source_indices=indices,
                     metadata={
-                        **action_slice.metadata,
+                        "requested_stride": provenance["requested_speed"],
+                        "actual_stride": provenance["actual_stride"],
+                        "boundary_limited": provenance["boundary_limited"],
+                        "truncated_at_horizon": provenance["truncated_at_horizon"],
                         "phases": tuple(phases[index] for index in indices),
                         "phase_confidence": tuple(confidence[index] for index in indices),
                         "phase_task_match": tuple(task_match[index] for index in indices),
@@ -262,6 +250,8 @@ class StriderPhaseSelector:
             "phase_confidence": list(confidence),
             "phase_task_match": list(task_match),
             "speed_factors": list(result.speed.factors),
+            "used_fallback": result.speed.used_fallback,
+            "fallback_indices": list(result.metadata["fallback_indices"]),
             "coverage_steps": result.coverage_steps,
             "schedule_source": result.metadata["schedule_source"],
             "pipeline_stages": list(result.transformed.receipt.stage_order),
