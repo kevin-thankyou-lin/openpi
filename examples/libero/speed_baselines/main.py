@@ -118,7 +118,10 @@ def eval_speed_baseline(args: Args) -> None:
     if args.method != "native":
         apply_sup_controller_patches()
     composer = SupActionComposer.from_robosuite()
-    policy = websocket_client_policy.WebsocketClientPolicy(args.host, args.port)
+    # First inference can include accelerator compilation and exceed the websocket
+    # library's 20-second keepalive timeout. Inference itself remains blocking, so
+    # disable protocol pings for this local deterministic evaluator connection.
+    policy = websocket_client_policy.WebsocketClientPolicy(args.host, args.port, ping_interval=None)
     policy_metadata = policy.get_server_metadata()
     selector = SupSelectorClient(args.selector_host, args.selector_port) if args.method == "sup" else None
     strider = (
