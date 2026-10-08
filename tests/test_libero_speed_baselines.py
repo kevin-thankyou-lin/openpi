@@ -5,10 +5,16 @@ import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
 
-from examples.libero.speed_baselines.actions import SupActionComposer, sail_precision_slices, uniform_slices
+from examples.libero.speed_baselines.actions import (
+    SupActionComposer,
+    phase_speed_slices,
+    sail_precision_slices,
+    uniform_slices,
+)
 from examples.libero.speed_baselines.result_utils import atomic_write_json, summarize_episodes, summarize_tasks
 from examples.libero.speed_baselines.telemetry import record_from_obs, write_episode
 from examples.libero.speed_baselines.strider_client import (
+    StriderPhaseSelector,
     causal_history,
     load_candidate_schedule,
     pop_strider_slice,
@@ -103,6 +109,26 @@ def test_sail_rejects_nan_scores(composer):
             fast_stride=2,
             composer=composer,
         )
+
+
+def test_phase_speed_slices_do_not_cross_slow_boundary(composer):
+    actions = np.zeros((6, 7))
+    actions[:, 0] = 0.1
+    slices = phase_speed_slices(
+        actions,
+        np.array([3, 3, 1, 1, 2, 2]),
+        composer=composer,
+    )
+    assert [item.source_indices for item in slices] == [(0,), (1,), (2,), (3,), (4, 5)]
+    assert [item.metadata["requested_stride"] for item in slices] == [3, 3, 1, 1, 2]
+
+
+def test_phase_speed_slices_merge_uniform_tail(composer):
+    actions = np.zeros((5, 7))
+    actions[:, 0] = 0.1
+    slices = phase_speed_slices(actions, np.full(5, 3), composer=composer)
+    assert [item.source_indices for item in slices] == [(0, 1, 2), (3, 4)]
+    np.testing.assert_allclose([item.action[0] for item in slices], [0.3, 0.2])
 
 
 def test_summary_is_episode_weighted():
@@ -225,9 +251,7 @@ def test_strider_telemetry_record_is_robot_only_and_copied():
         "env_step",
         "source_stride",
     }
-    np.testing.assert_allclose(
-        record["proprio"], np.concatenate([np.arange(7, dtype=np.float32), [-0.02, 0.02]])
-    )
+    np.testing.assert_allclose(record["proprio"], np.concatenate([np.arange(7, dtype=np.float32), [-0.02, 0.02]]))
     assert record["env_step"] == 3
     assert record["source_stride"] == 2
     obs["robot0_joint_pos"][0] = 100.0
@@ -281,9 +305,7 @@ def test_strider_proprio_uses_only_nine_robot_features():
     }
     np.testing.assert_array_equal(
         proprio_from_obs(obs),
-        np.concatenate(
-            [np.arange(7, dtype=np.float32), np.array([-0.1, 0.1], dtype=np.float32)]
-        ),
+        np.concatenate([np.arange(7, dtype=np.float32), np.array([-0.1, 0.1], dtype=np.float32)]),
     )
 
 
@@ -357,10 +379,7 @@ def test_strider_fine_phase_schedule_slows_only_moka_approach(tmp_path):
                 "status": "AI_CANDIDATE_NOT_PROMOTED_OR_EVALUATED",
                 "authority": "AI_CANDIDATE_NOT_HUMAN_ANNOTATION",
                 "requires_human_confirmation": True,
-                "phase_schedule": [
-                    [phase, 1 if phase == "task_02:moka_approach" else 3]
-                    for phase in phases
-                ],
+                "phase_schedule": [[phase, 1 if phase == "task_02:moka_approach" else 3] for phase in phases],
             }
         )
     )
@@ -369,10 +388,7 @@ def test_strider_fine_phase_schedule_slows_only_moka_approach(tmp_path):
         checkpoint_phases=phases,
         fast_stride=3,
     )
-    assert speeds == {
-        phase: 1 if phase == "task_02:moka_approach" else 3
-        for phase in phases
-    }
+    assert speeds == {phase: 1 if phase == "task_02:moka_approach" else 3 for phase in phases}
     assert task_ids == {2}
 
 
@@ -396,6 +412,76 @@ def test_strider_action_consumption_supports_stride_three_and_tail(composer):
     assert len(plan) == 0
     np.testing.assert_allclose(first.action[:3], [0.6, 0.6, 0.6])
     np.testing.assert_allclose(second.action, np.full(7, 0.4))
+
+
+def test_horizon_strider_plans_once_without_crossing_protected_phase(tmp_path, composer):
+    import strider
+
+    phases = (
+        "stove_approach",
+        "stove_toggle",
+        "moka_approach",
+        "moka_acquire",
+        "moka_transport",
+        "moka_place",
+    )
+    schedule = tmp_path / "schedule.json"
+    schedule.write_text(
+        json.dumps(
+            {
+                "schema": "strider-libero-task2-fine-phase-schedule-v1",
+                "status": "AI_CANDIDATE_NOT_PROMOTED_OR_EVALUATED",
+                "authority": "AI_CANDIDATE_NOT_HUMAN_ANNOTATION",
+                "requires_human_confirmation": True,
+                "phase_schedule": [[f"task_02:{phase}", 1 if phase == "moka_approach" else 3] for phase in phases],
+            }
+        )
+    )
+
+    class Predictor:
+        class_names = phases
+        history_length = 4
+        horizon = 6
+
+        def predict(self, observation_history):
+            assert len(observation_history) == 1
+            labels = (
+                "stove_approach",
+                "stove_approach",
+                "stove_approach",
+                "moka_approach",
+                "moka_transport",
+                "moka_transport",
+            )
+            probabilities = tuple(tuple(1.0 if name == label else 0.0 for name in phases) for label in labels)
+            return strider.SubtaskPrediction(
+                probabilities=probabilities,
+                class_names=phases,
+                valid=(True,) * 6,
+            )
+
+    selector = StriderPhaseSelector(
+        checkpoint=tmp_path / "unused.pt",
+        phase_repo=tmp_path,
+        schedule=schedule,
+        fast_stride=3,
+        device="cpu",
+        predictor_factory=lambda *_args, **_kwargs: Predictor(),
+        composer=composer,
+    )
+    selector.observe(
+        np.zeros((84, 84, 3), dtype=np.uint8),
+        {
+            "robot0_joint_pos": np.zeros(7),
+            "robot0_gripper_qpos": np.zeros(2),
+        },
+    )
+    slices, decision = selector.plan(np.zeros((6, 7)), task_id=2)
+
+    assert [item.source_indices for item in slices] == [(0, 1, 2), (3,), (4, 5)]
+    assert decision["speed_factors"] == [3.0, 3.0, 3.0, 1.0, 3.0, 3.0]
+    assert decision["coverage_steps"] == 3
+    assert decision["pipeline_stages"] == ["libero_phase_speed_retimer"]
 
 
 def test_strider_server_metadata_is_exact_and_candidate_only():

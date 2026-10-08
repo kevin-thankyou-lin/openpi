@@ -27,7 +27,6 @@ from .selector_client import SupSelectorClient
 from .strider_client import (
     STRIDER_AUTHORITY,
     StriderPhaseSelector,
-    pop_strider_slice,
     validate_strider_server_metadata,
 )
 from .telemetry import record_from_obs, write_episode
@@ -243,6 +242,8 @@ def _run_episode(
         wrist_image = image_tools.convert_to_uint8(
             image_tools.resize_with_pad(wrist_image, args.resize_size, args.resize_size)
         )
+        if strider is not None:
+            strider.observe(image, obs)
         if not action_plan:
             state = np.concatenate(
                 [obs["robot0_eef_pos"], _quat2axisangle(obs["robot0_eef_quat"]), obs["robot0_gripper_qpos"]]
@@ -260,22 +261,19 @@ def _run_episode(
                 slices, decision = _schedule_actions(actions, response, state, args, composer, selector)
                 action_plan.extend(slices)
             else:
-                action_plan.extend(action.copy() for action in actions)
-                decision = {"selected_k": None, "slice_strides": []}
+                slices, decision = strider.plan(actions, task_id=task_id)
+                action_plan.extend(slices)
             decision["decision_index"] = decision_index
             decision["env_step"] = env_steps
             decisions.append(decision)
             decision_index += 1
-        if strider is None:
-            action_slice = action_plan.popleft()
-        else:
-            selected_k, phase_decision = strider.select(image, obs, task_id=task_id)
-            action_slice = pop_strider_slice(action_plan, stride=selected_k, composer=composer)
-            decisions[-1]["slice_strides"].append(action_slice.stride)
+        action_slice = action_plan.popleft()
+        if strider is not None:
+            phase_decision = {}
             phase_decision.update(
                 {
                     "env_step": env_steps,
-                    "selected_k": selected_k,
+                    **action_slice.metadata,
                     "source_stride": action_slice.stride,
                 }
             )
@@ -382,9 +380,7 @@ def _validate_sail_metadata(metadata: dict, args: Args) -> None:
     if precision_taus is None:
         raise ValueError(f"SAIL metadata missing precision_taus: {metadata}")
     if args.sail_head_index < 0 or args.sail_head_index >= len(precision_taus):
-        raise ValueError(
-            f"SAIL head index {args.sail_head_index} outside precision_taus={precision_taus}"
-        )
+        raise ValueError(f"SAIL head index {args.sail_head_index} outside precision_taus={precision_taus}")
     selected_tau = float(precision_taus[args.sail_head_index])
     if not math.isclose(selected_tau, args.sail_expected_tau, rel_tol=0.0, abs_tol=1e-12):
         raise ValueError(
@@ -473,10 +469,7 @@ def _sha256(path: pathlib.Path) -> str:
 
 def _implementation_hashes() -> dict[str, str]:
     package_dir = pathlib.Path(__file__).resolve().parent
-    return {
-        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(package_dir.glob("*.py"))
-    }
+    return {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in sorted(package_dir.glob("*.py"))}
 
 
 if __name__ == "__main__":

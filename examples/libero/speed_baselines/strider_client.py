@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import collections
+import dataclasses
+import importlib
 import json
 import pathlib
 import sys
@@ -8,7 +10,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from .actions import ActionSlice, SupActionComposer
+from .actions import ActionSlice, SupActionComposer, phase_speed_slices
 
 
 STRIDER_AUTHORITY = "AI_CANDIDATE_NOT_HUMAN_ANNOTATION"
@@ -59,8 +61,7 @@ def load_candidate_schedule(
             task_id = int(task_text)
             task_ids.add(task_id)
             entries.extend(
-                (f"task_{task_id:02d}:{phase_name}", speed)
-                for phase_name, speed in task.get("subtasks", [])
+                (f"task_{task_id:02d}:{phase_name}", speed) for phase_name, speed in task.get("subtasks", [])
             )
     elif schema == STRIDER_FINE_SCHEDULE_SCHEMA:
         if payload.get("authority") != STRIDER_AUTHORITY or payload.get("requires_human_confirmation") is not True:
@@ -141,7 +142,7 @@ def validate_strider_server_metadata(
 
 
 class StriderPhaseSelector:
-    """Task-ID-free phase inference with a frozen candidate phase-to-speed table."""
+    """Horizon-aligned phase inference with a frozen candidate speed table."""
 
     def __init__(
         self,
@@ -152,49 +153,116 @@ class StriderPhaseSelector:
         fast_stride: int,
         device: str,
         predictor_factory: Callable[..., Any] | None = None,
+        composer: SupActionComposer | None = None,
     ) -> None:
         checkpoint = pathlib.Path(checkpoint)
         phase_repo = pathlib.Path(phase_repo)
         schedule = pathlib.Path(schedule)
+        sys.path.insert(0, str(phase_repo / "src"))
+        strider = importlib.import_module("strider")
         if predictor_factory is None:
-            sys.path.insert(0, str(phase_repo))
-            from phase_detector.rgb_inference import RGBPhasePredictor
-
-            predictor_factory = RGBPhasePredictor
+            model_module = importlib.import_module("strider.subtask_model")
+            predictor_factory = model_module.TorchObservationHistorySubtaskPredictor.from_checkpoint
         self.predictor = predictor_factory(checkpoint, device=device)
+        checkpoint_phases = tuple(f"task_02:{name}" for name in self.predictor.class_names)
         self.phase_speeds, self.affected_task_ids = load_candidate_schedule(
             schedule,
-            checkpoint_phases=tuple(self.predictor.phases),
+            checkpoint_phases=checkpoint_phases,
             fast_stride=fast_stride,
         )
+        if self.affected_task_ids != {2}:
+            raise ValueError("horizon Task-2 evaluator requires exactly task 2 in the schedule")
         self.fast_stride = fast_stride
-        self._proprio: list[np.ndarray] = []
+        self._observations: list[dict[str, np.ndarray]] = []
+        self._composer = composer or SupActionComposer.from_robosuite()
+
+        selector = self
+        composer_instance = self._composer
+
+        class RegisteredSchedule:
+            def decide(self, prediction):
+                phase_keys = tuple(f"task_02:{label}" for label in prediction.labels)
+                missing = [key for key in phase_keys if key not in selector.phase_speeds]
+                if missing:
+                    raise ValueError(f"predictor returned unregistered phases {missing}")
+                return strider.SpeedDecision(
+                    factors=tuple(float(selector.phase_speeds[key]) for key in phase_keys),
+                    metadata={
+                        "phase_keys": phase_keys,
+                        "phase_confidence": prediction.confidence,
+                        "phase_task_match": tuple(key.startswith("task_02:") for key in phase_keys),
+                        "schedule_source": "horizon_ai_candidate_not_promoted",
+                    },
+                )
+
+        class LiberoRetimer:
+            name = "libero_phase_speed_retimer"
+
+            def retime(self, plan, *, context):
+                del context
+                slices = phase_speed_slices(
+                    np.asarray(plan.actions, dtype=np.float64),
+                    np.asarray(plan.speed_factors, dtype=np.float64),
+                    composer=composer_instance,
+                )
+                provenance = tuple(
+                    {
+                        "source_indices": item.source_indices,
+                        "requested_stride": item.metadata["requested_stride"],
+                    }
+                    for item in slices
+                )
+                return strider.RetimeResult(
+                    decoded=plan,
+                    scheduled=strider.ScheduledPlan(actions=tuple(slices), provenance=provenance),
+                )
+
+        self.runtime = strider.StriderRuntime(
+            predictor=self.predictor,
+            schedule=RegisteredSchedule(),
+            pipeline=strider.PlanPipeline(retimer=LiberoRetimer()),
+        )
 
     def reset_episode(self) -> None:
-        self._proprio.clear()
+        self._observations.clear()
 
-    def select(self, image: np.ndarray, obs: dict[str, Any], *, task_id: int) -> tuple[int, dict[str, Any]]:
-        if task_id not in self.affected_task_ids:
-            return self.fast_stride, {
-                "phase": None,
-                "phase_confidence": None,
-                "phase_task_match": None,
-                "schedule_source": "registered_uniform_2x_unaffected_task",
-            }
-        self._proprio.append(proprio_from_obs(obs))
-        history = causal_history(
-            self._proprio,
-            history=int(self.predictor.history),
-            stride=int(self.predictor.inference_history_stride),
+    def observe(self, image: np.ndarray, obs: dict[str, Any]) -> None:
+        self._observations.append({"rgb": np.asarray(image, dtype=np.uint8), "proprio": proprio_from_obs(obs)})
+        self._observations = self._observations[-int(self.predictor.history_length) :]
+
+    def plan(self, actions: np.ndarray, *, task_id: int) -> tuple[list[ActionSlice], dict[str, Any]]:
+        if task_id != 2:
+            raise ValueError(f"horizon Task-2 evaluator received task {task_id}")
+        result = self.runtime.plan(
+            self._observations,
+            tuple(np.asarray(action, dtype=np.float64) for action in actions),
+            metadata={"task_id": task_id},
         )
-        prediction = self.predictor.predict(np.asarray(image, dtype=np.uint8), history)
-        phase = str(prediction["phase"])
-        if phase not in self.phase_speeds:
-            raise ValueError(f"Strider predictor returned unregistered phase {phase!r}")
-        probability = np.asarray(prediction["probability"], dtype=np.float64)
-        return self.phase_speeds[phase], {
-            "phase": phase,
-            "phase_confidence": float(np.max(probability)),
-            "phase_task_match": phase.startswith(f"task_{task_id:02d}:"),
-            "schedule_source": "ai_candidate_phase_schedule_not_promoted",
+        phases = result.metadata["phase_keys"]
+        confidence = result.metadata["phase_confidence"]
+        task_match = result.metadata["phase_task_match"]
+        scheduled = []
+        for action_slice in result.scheduled_actions:
+            indices = action_slice.source_indices
+            scheduled.append(
+                dataclasses.replace(
+                    action_slice,
+                    metadata={
+                        **action_slice.metadata,
+                        "phases": tuple(phases[index] for index in indices),
+                        "phase_confidence": tuple(confidence[index] for index in indices),
+                        "phase_task_match": tuple(task_match[index] for index in indices),
+                    },
+                )
+            )
+        return scheduled, {
+            "selected_k": None,
+            "slice_strides": [item.stride for item in scheduled],
+            "predicted_phases": list(phases),
+            "phase_confidence": list(confidence),
+            "phase_task_match": list(task_match),
+            "speed_factors": list(result.speed.factors),
+            "coverage_steps": result.coverage_steps,
+            "schedule_source": result.metadata["schedule_source"],
+            "pipeline_stages": list(result.transformed.receipt.stage_order),
         }

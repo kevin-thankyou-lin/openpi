@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+from typing import Any
 
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -12,6 +13,7 @@ class ActionSlice:
 
     action: np.ndarray
     source_indices: tuple[int, ...]
+    metadata: dict[str, Any] = dataclasses.field(default_factory=dict)
 
     @property
     def stride(self) -> int:
@@ -86,9 +88,7 @@ class SupActionComposer:
         merged_rotation = Rotation.identity()
         for rotation in Rotation.from_rotvec(raw[:, 3:6]):
             merged_rotation = rotation * merged_rotation
-        merged_raw = np.concatenate(
-            [delta_position, merged_rotation.as_rotvec(), np.asarray([raw[-1, 6]])]
-        )
+        merged_raw = np.concatenate([delta_position, merged_rotation.as_rotvec(), np.asarray([raw[-1, 6]])])
         return self.from_controller_space(merged_raw[None, :])[0]
 
 
@@ -158,6 +158,43 @@ def sail_precision_slices(
         else:
             result.append(ActionSlice(actions[index].copy(), (index,)))
             index += 1
+    return result
+
+
+def phase_speed_slices(
+    actions: np.ndarray,
+    speed_factors: np.ndarray,
+    *,
+    composer: SupActionComposer,
+) -> list[ActionSlice]:
+    """Materialize per-action phase speeds without crossing a phase boundary."""
+
+    actions = _validate_actions(actions)
+    speeds = np.asarray(speed_factors, dtype=np.float64).reshape(-1)
+    if len(speeds) != len(actions):
+        raise ValueError(f"speed factor count {len(speeds)} != action count {len(actions)}")
+    if not np.isfinite(speeds).all() or np.any(speeds < 1) or np.any(speeds != np.floor(speeds)):
+        raise ValueError("phase speed factors must be finite positive integers")
+
+    result: list[ActionSlice] = []
+    index = 0
+    while index < len(actions):
+        requested_stride = int(speeds[index])
+        stop = min(index + requested_stride, len(actions))
+        can_merge = np.all(speeds[index:stop] == requested_stride)
+        if not can_merge:
+            stop = index + 1
+        indices = tuple(range(index, stop))
+        group = actions[index:stop]
+        merged = group[0].copy() if len(group) == 1 else composer.merge(group)
+        result.append(
+            ActionSlice(
+                action=merged,
+                source_indices=indices,
+                metadata={"requested_stride": requested_stride},
+            )
+        )
+        index = stop
     return result
 
 
