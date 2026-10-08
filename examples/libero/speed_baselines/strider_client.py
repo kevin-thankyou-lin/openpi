@@ -17,6 +17,7 @@ STRIDER_AUTHORITY = "AI_CANDIDATE_NOT_HUMAN_ANNOTATION"
 STRIDER_SCHEDULE_SCHEMA = "strider-libero-subtask-candidate-v1"
 STRIDER_FINE_SCHEDULE_SCHEMA = "strider-libero-task2-fine-phase-schedule-v1"
 STRIDER_SERVER_METHOD = "strider_phase_candidate"
+STRIDER_ALLOWED_SPEEDS = frozenset({1.0, 1.5, 2.0, 3.0})
 
 
 def causal_history(values: list[np.ndarray], *, history: int, stride: int) -> np.ndarray:
@@ -47,13 +48,13 @@ def proprio_from_obs(obs: dict[str, Any]) -> np.ndarray:
 
 def load_candidate_schedule(
     path: pathlib.Path, *, checkpoint_phases: tuple[str, ...], fast_stride: int
-) -> tuple[dict[str, int], frozenset[int]]:
+) -> tuple[dict[str, float], frozenset[int]]:
     path = pathlib.Path(path)
     payload = json.loads(path.read_text())
     schema = payload.get("schema")
-    speeds: dict[str, int] = {}
+    speeds: dict[str, float] = {}
     task_ids = set()
-    entries: list[tuple[str, int]] = []
+    entries: list[tuple[str, float]] = []
     if schema == STRIDER_SCHEDULE_SCHEMA:
         if payload.get("review_gate") != "non-authoritative until every boundary is visually reviewed":
             raise ValueError("Strider candidate schedule is missing its non-authoritative review gate")
@@ -85,8 +86,10 @@ def load_candidate_schedule(
             task_ids.add(int(key.split(":", 1)[0][5:]))
         except ValueError as exc:
             raise ValueError(f"invalid Strider phase key: {key!r}") from exc
-        speed = int(speed)
-        if speed < 1 or speed > fast_stride:
+        if isinstance(speed, bool) or not isinstance(speed, (int, float)):  # noqa: UP038
+            raise ValueError(f"{key} uses non-numeric candidate speed {speed!r}")
+        speed = float(speed)
+        if speed not in STRIDER_ALLOWED_SPEEDS or speed > fast_stride:
             raise ValueError(f"{key} uses unsupported candidate speed {speed}")
         if key in speeds:
             raise ValueError(f"duplicate Strider candidate phase {key}")
@@ -192,9 +195,9 @@ class StriderPhaseSelector:
                 minimum_confidence=0.0,
             ),
             pipeline=strider.PlanPipeline(
-                retimer=strider.BoundaryAwareStrideRetimer(
+                retimer=strider.BoundaryAwareCadenceRetimer(
                     LiberoActionComposer(),
-                    allowed_speeds=tuple(range(1, fast_stride + 1)),
+                    allowed_speeds=tuple(sorted(STRIDER_ALLOWED_SPEEDS)),
                 )
             ),
         )

@@ -395,6 +395,38 @@ def test_strider_fine_phase_schedule_slows_only_moka_approach(tmp_path):
     assert task_ids == {2}
 
 
+def test_strider_fine_phase_schedule_accepts_fractional_moka_approach(tmp_path):
+    schedule = tmp_path / "schedule.json"
+    phases = (
+        "task_02:stove_approach",
+        "task_02:stove_toggle",
+        "task_02:moka_approach",
+        "task_02:moka_acquire",
+        "task_02:moka_transport",
+        "task_02:moka_place",
+    )
+    schedule.write_text(
+        json.dumps(
+            {
+                "schema": "strider-libero-task2-fine-phase-schedule-v1",
+                "status": "AI_CANDIDATE_NOT_PROMOTED_OR_EVALUATED",
+                "authority": "AI_CANDIDATE_NOT_HUMAN_ANNOTATION",
+                "requires_human_confirmation": True,
+                "phase_schedule": [[phase, 1.5 if phase == "task_02:moka_approach" else 3] for phase in phases],
+            }
+        )
+    )
+
+    speeds, task_ids = load_candidate_schedule(
+        schedule,
+        checkpoint_phases=phases,
+        fast_stride=3,
+    )
+
+    assert speeds["task_02:moka_approach"] == 1.5
+    assert task_ids == {2}
+
+
 def test_strider_action_consumption_respects_speed_and_odd_tail(composer):
     plan = collections.deque(np.full(7, value, dtype=np.float64) for value in (0.1, 0.2, 0.3))
     first = pop_strider_slice(plan, stride=2, composer=composer)
@@ -484,7 +516,7 @@ def test_horizon_strider_plans_once_without_crossing_protected_phase(tmp_path, c
     assert [item.source_indices for item in slices] == [(0, 1, 2), (3,), (4, 5)]
     assert decision["speed_factors"] == [3.0, 3.0, 3.0, 1.0, 3.0, 3.0]
     assert decision["coverage_steps"] == 3
-    assert decision["pipeline_stages"] == ["boundary_aware_stride_retimer"]
+    assert decision["pipeline_stages"] == ["boundary_aware_cadence_retimer"]
     assert decision["used_fallback"] is False
     assert decision["fallback_indices"] == []
 
@@ -536,12 +568,24 @@ def test_search_runner_renders_plain_schedule_for_task2(tmp_path):
     assert json.loads(destination.read_text()) == payload
 
 
+def test_search_runner_renders_fractional_moka_approach(tmp_path):
+    source = tmp_path / "schedule.json"
+    source.write_text(json.dumps({phase: 1.5 if phase == "moka_approach" else 3 for phase in PHASES}))
+    destination = tmp_path / "run" / "libero_schedule.json"
+    destination.parent.mkdir()
+
+    payload = render_libero_schedule(source, destination)
+
+    assert payload["candidate_speed_set"] == [1.0, 1.5, 2.0, 3.0]
+    assert dict(payload["phase_schedule"])["task_02:moka_approach"] == 1.5
+
+
 @pytest.mark.parametrize(
     ("schedule", "match"),
     [
         ({phase: 1 for phase in PHASES[:-1]}, "phase mismatch"),
         ({**{phase: 1 for phase in PHASES}, "extra": 1}, "phase mismatch"),
-        ({phase: 1.5 if phase == PHASES[0] else 1 for phase in PHASES}, "must be one of"),
+        ({phase: 1.25 if phase == PHASES[0] else 1 for phase in PHASES}, "must be one of"),
         ({phase: 4 if phase == PHASES[0] else 1 for phase in PHASES}, "must be one of"),
     ],
 )

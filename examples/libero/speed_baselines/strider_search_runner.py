@@ -11,6 +11,8 @@ import subprocess
 import time
 from typing import Any
 
+from .strider_client import STRIDER_ALLOWED_SPEEDS
+
 TASK_ID = 2
 FAST_STRIDE = 3
 AUTHORITY = "AI_CANDIDATE_NOT_HUMAN_ANNOTATION"
@@ -23,7 +25,7 @@ PHASES = (
     "moka_transport",
     "moka_place",
 )
-ALLOWED_SPEEDS = frozenset({1, 2, 3})
+ALLOWED_SPEEDS = STRIDER_ALLOWED_SPEEDS
 
 
 @dataclasses.dataclass(frozen=True)
@@ -52,13 +54,13 @@ def render_libero_schedule(source: pathlib.Path, destination: pathlib.Path) -> d
         extra = sorted(set(raw) - set(PHASES))
         raise ValueError(f"Task-2 schedule phase mismatch: missing={missing} extra={extra}")
 
-    speeds: dict[str, int] = {}
+    speeds: dict[str, float] = {}
     for phase in PHASES:
         value = raw[phase]
         if isinstance(value, bool) or not isinstance(value, (int, float)):  # noqa: UP038
             raise ValueError(f"speed for {phase!r} must be numeric")
-        speed = int(value)
-        if float(value) != speed or speed not in ALLOWED_SPEEDS:
+        speed = float(value)
+        if speed not in ALLOWED_SPEEDS:
             raise ValueError(f"speed for {phase!r} must be one of {sorted(ALLOWED_SPEEDS)}, got {value!r}")
         speeds[phase] = speed
 
