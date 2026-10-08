@@ -1,26 +1,30 @@
-import json
 import collections
+import json
 
 import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
 
-from examples.libero.speed_baselines.actions import (
-    SupActionComposer,
-    phase_speed_slices,
-    sail_precision_slices,
-    uniform_slices,
-)
-from examples.libero.speed_baselines.result_utils import atomic_write_json, summarize_episodes, summarize_tasks
-from examples.libero.speed_baselines.telemetry import record_from_obs, write_episode
-from examples.libero.speed_baselines.strider_client import (
-    StriderPhaseSelector,
-    causal_history,
-    load_candidate_schedule,
-    pop_strider_slice,
-    proprio_from_obs,
-    validate_strider_server_metadata,
-)
+from examples.libero.speed_baselines.actions import SupActionComposer
+from examples.libero.speed_baselines.actions import phase_speed_slices
+from examples.libero.speed_baselines.actions import sail_precision_slices
+from examples.libero.speed_baselines.actions import uniform_slices
+from examples.libero.speed_baselines.result_utils import atomic_write_json
+from examples.libero.speed_baselines.result_utils import summarize_episodes
+from examples.libero.speed_baselines.result_utils import summarize_tasks
+from examples.libero.speed_baselines.strider_client import StriderPhaseSelector
+from examples.libero.speed_baselines.strider_client import causal_history
+from examples.libero.speed_baselines.strider_client import load_candidate_schedule
+from examples.libero.speed_baselines.strider_client import pop_strider_slice
+from examples.libero.speed_baselines.strider_client import proprio_from_obs
+from examples.libero.speed_baselines.strider_client import validate_strider_server_metadata
+from examples.libero.speed_baselines.strider_search_runner import ALLOWED_SPEEDS
+from examples.libero.speed_baselines.strider_search_runner import PHASES
+from examples.libero.speed_baselines.strider_search_runner import SCHEDULE_SCHEMA
+from examples.libero.speed_baselines.strider_search_runner import render_libero_schedule
+from examples.libero.speed_baselines.strider_search_runner import validate_search_run_config
+from examples.libero.speed_baselines.telemetry import record_from_obs
+from examples.libero.speed_baselines.telemetry import write_episode
 
 
 @pytest.fixture
@@ -261,21 +265,20 @@ def test_strider_telemetry_record_is_robot_only_and_copied():
 def test_strider_telemetry_episode_is_atomic_and_hash_pinned(tmp_path):
     video = tmp_path / "rollout.mp4"
     video.write_bytes(b"not-a-real-video-but-nonempty")
-    records = []
-    for step in range(2):
-        records.append(
-            record_from_obs(
-                {
-                    "robot0_joint_pos": np.arange(7) + step,
-                    "robot0_gripper_qpos": np.array([-0.02, 0.02]),
-                    "robot0_eef_pos": np.array([0.1, 0.2, 0.3]),
-                    "robot0_eef_quat": np.array([0.0, 0.0, 0.0, 1.0]),
-                },
-                action=np.zeros(7),
-                env_step=step,
-                source_stride=1,
-            )
+    records = [
+        record_from_obs(
+            {
+                "robot0_joint_pos": np.arange(7) + step,
+                "robot0_gripper_qpos": np.array([-0.02, 0.02]),
+                "robot0_eef_pos": np.array([0.1, 0.2, 0.3]),
+                "robot0_eef_quat": np.array([0.0, 0.0, 0.0, 1.0]),
+            },
+            action=np.zeros(7),
+            env_step=step,
+            source_stride=1,
         )
+        for step in range(2)
+    ]
     episode = write_episode(
         tmp_path / "telemetry" / "task_00_episode_00",
         video_path=video,
@@ -515,3 +518,66 @@ def test_strider_server_metadata_is_exact_and_candidate_only():
             evaluator_commit="commit",
             fast_stride=2,
         )
+
+
+def test_search_runner_renders_plain_schedule_for_task2(tmp_path):
+    source = tmp_path / "schedule.json"
+    source.write_text(json.dumps({phase: 3 if phase == "moka_transport" else 1 for phase in PHASES}))
+    destination = tmp_path / "run" / "libero_schedule.json"
+    destination.parent.mkdir()
+
+    payload = render_libero_schedule(source, destination)
+
+    assert payload["schema"] == SCHEDULE_SCHEMA
+    assert payload["candidate_speed_set"] == sorted(ALLOWED_SPEEDS)
+    assert payload["phase_schedule"] == [
+        [f"task_02:{phase}", 3 if phase == "moka_transport" else 1] for phase in PHASES
+    ]
+    assert json.loads(destination.read_text()) == payload
+
+
+@pytest.mark.parametrize(
+    ("schedule", "match"),
+    [
+        ({phase: 1 for phase in PHASES[:-1]}, "phase mismatch"),
+        ({**{phase: 1 for phase in PHASES}, "extra": 1}, "phase mismatch"),
+        ({phase: 1.5 if phase == PHASES[0] else 1 for phase in PHASES}, "must be one of"),
+        ({phase: 4 if phase == PHASES[0] else 1 for phase in PHASES}, "must be one of"),
+    ],
+)
+def test_search_runner_rejects_invalid_plain_schedule(tmp_path, schedule, match):
+    source = tmp_path / "schedule.json"
+    source.write_text(json.dumps(schedule))
+
+    with pytest.raises(ValueError, match=match):
+        render_libero_schedule(source, tmp_path / "libero_schedule.json")
+
+
+def test_search_runner_refuses_to_replace_different_rendered_schedule(tmp_path):
+    source = tmp_path / "schedule.json"
+    source.write_text(json.dumps({phase: 1 for phase in PHASES}))
+    destination = tmp_path / "libero_schedule.json"
+    render_libero_schedule(source, destination)
+    destination.write_text("{}\n")
+
+    with pytest.raises(FileExistsError, match="refusing to replace"):
+        render_libero_schedule(source, destination)
+
+
+def test_search_runner_validates_reserved_run_contract(tmp_path):
+    schedule = tmp_path / "schedule.json"
+    schedule.write_text(json.dumps({phase: 1 for phase in PHASES}))
+    config = tmp_path / "config.json"
+    config.write_text(
+        json.dumps(
+            {
+                "speed_schedule": {phase: 1 for phase in PHASES},
+                "requested_rollouts": 5,
+            }
+        )
+    )
+
+    validate_search_run_config(config, schedule_path=schedule, num_trials=5)
+
+    with pytest.raises(ValueError, match="requested_rollouts"):
+        validate_search_run_config(config, schedule_path=schedule, num_trials=1)

@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import collections
+from collections.abc import Callable
 import importlib
 import json
 import pathlib
 import sys
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 
-from .actions import ActionSlice, SupActionComposer
-
+from .actions import ActionSlice
+from .actions import SupActionComposer
 
 STRIDER_AUTHORITY = "AI_CANDIDATE_NOT_HUMAN_ANNOTATION"
 STRIDER_SCHEDULE_SCHEMA = "strider-libero-subtask-candidate-v1"
@@ -74,7 +75,7 @@ def load_candidate_schedule(
         raise ValueError(f"unsupported Strider schedule schema: {schema!r}")
 
     for entry in entries:
-        if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+        if not isinstance(entry, list | tuple) or len(entry) != 2:
             raise ValueError(f"invalid Strider phase entry: {entry!r}")
         key, speed = entry
         key = str(key)
@@ -175,17 +176,17 @@ class StriderPhaseSelector:
         self._observations: list[dict[str, np.ndarray]] = []
         self._composer = composer or SupActionComposer.from_robosuite()
 
-        phase_speeds = {
-            key.split(":", 1)[1]: float(speed) for key, speed in self.phase_speeds.items()
-        }
+        phase_speeds = {key.split(":", 1)[1]: float(speed) for key, speed in self.phase_speeds.items()}
+
+        libero_composer = self._composer
 
         class LiberoActionComposer:
-            def compose(_self, actions):
-                return self._composer.merge(np.asarray(actions, dtype=np.float64))
+            def compose(self, actions):
+                return libero_composer.merge(np.asarray(actions, dtype=np.float64))
 
         self.runtime = strider.StriderRuntime(
             predictor=self.predictor,
-            schedule=strider.PhaseSpeedSchedule(
+            schedule=strider.SubtaskSpeedSchedule(
                 phase_speeds,
                 fallback_speed=1.0,
                 minimum_confidence=0.0,
@@ -216,16 +217,14 @@ class StriderPhaseSelector:
                 "schedule_source": "horizon_ai_candidate_not_promoted",
             },
         )
-        phases = tuple(
-            None if label is None else f"task_02:{label}"
-            for label in result.metadata["phase_labels"]
-        )
-        confidence = result.metadata["phase_confidence"]
+        phases = tuple(None if label is None else f"task_02:{label}" for label in result.metadata["subtask_labels"])
+        confidence = result.metadata["subtask_confidence"]
         task_match = tuple(phase in self.phase_speeds for phase in phases)
         scheduled = []
         for action, provenance in zip(
             result.scheduled_actions,
             result.transformed.scheduled.provenance,
+            strict=True,
         ):
             indices = tuple(provenance["source_indices"])
             scheduled.append(

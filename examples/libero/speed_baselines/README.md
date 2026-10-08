@@ -38,6 +38,38 @@ python -m examples.libero.speed_baselines.main \
   --sail-head-index 2 --sail-expected-tau 0.01
 ```
 
+## STRIDER Task-2 search evaluator
+
+`strider_search_runner` is the deterministic evaluator bridge for
+`strider-search`. It accepts the plain six-phase schedule written by STRIDER,
+renders the immutable LIBERO schedule schema, starts a schedule-pinned policy
+server, runs Task 2, and shuts that server down. The evaluator uses integer
+speeds `1`, `2`, and `3` only.
+
+```bash
+python -m examples.libero.speed_baselines.strider_search_runner \
+  --run-dir /path/to/search/run-0001 \
+  --schedule /path/to/search/run-0001/schedule.json \
+  --phase-checkpoint /path/to/subtask_predictor.pt \
+  --phase-repo /path/to/strider \
+  --server-python /path/to/openpi-server-python \
+  --server-port 8010 \
+  --num-trials 5
+```
+
+The wrapper fixes the suite to `libero_10`, task ID `2`, policy chunk horizon
+`10`, CPU subtask inference, STRIDER telemetry, and maximum supported stride
+`3`. Its schedule must contain exactly:
+
+```text
+stove_approach, stove_toggle, moka_approach,
+moka_acquire, moka_transport, moka_place
+```
+
+The run directory remains owned by the existing evaluator lock and contains the
+search `config.json`/`schedule.json`, rendered `libero_schedule.json`, server
+log, immutable evaluator manifest, atomic results, telemetry, and videos.
+
 SuP requires the supplementary `predict_k` websocket service. SAIL fails closed
 unless policy-server metadata declares `method=sail_precision_head`, the fast
 stride matches, and inference returns one finite precision score per action.
