@@ -39,6 +39,7 @@ class Args:
     server_port: int = 8010
     server_start_timeout_seconds: float = 180.0
     num_trials: int = 5
+    episode_start: int = 0
     seed: int = 7
     task_id: int = TASK_ID
     phase_names: str = ",".join(PHASES)
@@ -90,7 +91,13 @@ def render_libero_schedule(
     return payload
 
 
-def validate_search_run_config(config_path: pathlib.Path, *, schedule_path: pathlib.Path, num_trials: int) -> None:
+def validate_search_run_config(
+    config_path: pathlib.Path,
+    *,
+    schedule_path: pathlib.Path,
+    num_trials: int,
+    episode_start: int,
+) -> None:
     """Require the evaluator request to match STRIDER's reserved run contract."""
 
     config = json.loads(pathlib.Path(config_path).read_text())
@@ -103,6 +110,11 @@ def validate_search_run_config(config_path: pathlib.Path, *, schedule_path: path
         raise ValueError(
             "config requested_rollouts does not match --num-trials: "
             f"{config.get('requested_rollouts')!r} != {num_trials}"
+        )
+    if config.get("episode_start") != episode_start:
+        raise ValueError(
+            "config episode_start does not match evaluator request: "
+            f"{config.get('episode_start')!r} != {episode_start}"
         )
 
 
@@ -135,6 +147,7 @@ def run(args: Args) -> None:
         args.run_dir / "config.json",
         schedule_path=args.schedule,
         num_trials=args.num_trials,
+        episode_start=args.episode_start,
     )
     rendered_schedule = args.run_dir / "libero_schedule.json"
     phases = tuple(item.strip() for item in args.phase_names.split(",") if item.strip())
@@ -180,6 +193,7 @@ def run(args: Args) -> None:
                     task_suite_name="libero_10",
                     task_start=args.task_id,
                     task_count=1,
+                    episode_start=args.episode_start,
                     num_trials_per_task=args.num_trials,
                     seed=args.seed,
                     fast_stride=FAST_STRIDE,
@@ -205,6 +219,8 @@ def _validate_args(args: Args) -> None:
             raise FileNotFoundError(f"{name} does not exist: {path}")
     if args.num_trials < 1:
         raise ValueError("num_trials must be positive")
+    if args.episode_start < 0:
+        raise ValueError("episode_start must be nonnegative")
     if not 0 < args.server_port < 65536:
         raise ValueError("server_port must be within 1..65535")
     if args.server_start_timeout_seconds <= 0:

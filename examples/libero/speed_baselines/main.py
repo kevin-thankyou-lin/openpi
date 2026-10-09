@@ -28,6 +28,7 @@ from .actions import uniform_cadence_slices
 from .actions import uniform_slices
 from .controller import apply_sup_controller_patches
 from .result_utils import atomic_write_json
+from .result_utils import episode_indices
 from .result_utils import summarize_episodes
 from .result_utils import summarize_tasks
 from .selector_client import SupSelectorClient
@@ -58,6 +59,7 @@ class Args:
     task_suite_name: str = "libero_10"
     task_start: int = 0
     task_count: Optional[int] = None
+    episode_start: int = 0
     num_trials_per_task: int = 1
     seed: int = 7
     resize_size: int = 224
@@ -164,7 +166,13 @@ def eval_speed_baseline(args: Args) -> None:
             initial_states = task_suite.get_task_init_states(task_id)
             env, task_description = _get_libero_env(task, args.seed)
             try:
-                for episode_index in range(args.num_trials_per_task):
+                selected_episode_indices = episode_indices(
+                    initial_state_count=len(initial_states),
+                    episode_start=args.episode_start,
+                    num_trials=args.num_trials_per_task,
+                    task_id=task_id,
+                )
+                for episode_index in selected_episode_indices:
                     key = (task_id, episode_index)
                     if key in completed_keys:
                         continue
@@ -446,6 +454,8 @@ def _validate_args(args: Args) -> None:
         raise ValueError("chunk_size must be positive")
     if args.num_trials_per_task < 1:
         raise ValueError("num_trials_per_task must be positive")
+    if args.episode_start < 0:
+        raise ValueError("episode_start must be nonnegative")
     if args.task_start < 0:
         raise ValueError("task_start must be nonnegative")
     if args.task_count is not None and args.task_count < 1:

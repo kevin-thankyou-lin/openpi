@@ -7,6 +7,16 @@ import tempfile
 from typing import Any
 
 
+def episode_indices(*, initial_state_count: int, episode_start: int, num_trials: int, task_id: int) -> range:
+    episode_stop = episode_start + num_trials
+    if episode_stop > initial_state_count:
+        raise ValueError(
+            f"task {task_id} has {initial_state_count} initial states, "
+            f"cannot evaluate episode indices {episode_start}..{episode_stop - 1}"
+        )
+    return range(episode_start, episode_stop)
+
+
 def atomic_write_json(path: pathlib.Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)

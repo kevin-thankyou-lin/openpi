@@ -123,6 +123,7 @@ def run(args: Args) -> None:
                 "task_id": route.task_id,
                 "speed_schedule": schedule,
                 "requested_rollouts": args.num_trials,
+                "episode_start": 0,
                 "seed": args.seed,
                 "phase_checkpoint": str(route.phase_checkpoint.resolve()),
                 "phase_checkpoint_sha256": route.checkpoint_sha256,

@@ -11,6 +11,7 @@ from examples.libero.speed_baselines.actions import sail_precision_slices
 from examples.libero.speed_baselines.actions import uniform_cadence_slices
 from examples.libero.speed_baselines.actions import uniform_slices
 from examples.libero.speed_baselines.result_utils import atomic_write_json
+from examples.libero.speed_baselines.result_utils import episode_indices
 from examples.libero.speed_baselines.result_utils import summarize_episodes
 from examples.libero.speed_baselines.result_utils import summarize_tasks
 from examples.libero.speed_baselines.strider_client import StriderPhaseSelector
@@ -160,6 +161,21 @@ def test_summary_is_episode_weighted():
         "mean_success_env_steps": 15,
         "mean_success_source_actions": 30,
     }
+
+
+def test_episode_indices_select_fresh_continuation_bank():
+    assert list(episode_indices(initial_state_count=20, episode_start=5, num_trials=5, task_id=4)) == [
+        5,
+        6,
+        7,
+        8,
+        9,
+    ]
+
+
+def test_episode_indices_reject_out_of_range_bank():
+    with pytest.raises(ValueError, match="cannot evaluate episode indices 18..22"):
+        episode_indices(initial_state_count=20, episode_start=18, num_trials=5, task_id=4)
 
 
 def test_task_summaries_are_episode_weighted_and_sorted():
@@ -687,11 +703,15 @@ def test_search_runner_validates_reserved_run_contract(tmp_path):
             {
                 "speed_schedule": {phase: 1 for phase in PHASES},
                 "requested_rollouts": 5,
+                "episode_start": 5,
             }
         )
     )
 
-    validate_search_run_config(config, schedule_path=schedule, num_trials=5)
+    validate_search_run_config(config, schedule_path=schedule, num_trials=5, episode_start=5)
 
     with pytest.raises(ValueError, match="requested_rollouts"):
-        validate_search_run_config(config, schedule_path=schedule, num_trials=1)
+        validate_search_run_config(config, schedule_path=schedule, num_trials=1, episode_start=5)
+
+    with pytest.raises(ValueError, match="episode_start"):
+        validate_search_run_config(config, schedule_path=schedule, num_trials=5, episode_start=0)
