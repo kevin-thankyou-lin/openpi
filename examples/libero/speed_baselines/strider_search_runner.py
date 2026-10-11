@@ -11,6 +11,11 @@ import subprocess
 import time
 from typing import Any
 
+from .campaign_routes import CampaignRoute
+from .campaign_routes import file_sha256
+from .campaign_routes import load_routes
+from .campaign_routes import select_route
+from .campaign_routes import validate_task
 from .strider_client import STRIDER_ALLOWED_SPEEDS
 
 TASK_ID = 2
@@ -42,6 +47,8 @@ class Args:
     seed: int = 7
     task_id: int = TASK_ID
     phase_names: str = ",".join(PHASES)
+    task_suite_name: str = "libero_10"
+    route_registry: pathlib.Path | None = None
 
 
 def render_libero_schedule(
@@ -50,9 +57,12 @@ def render_libero_schedule(
     *,
     task_id: int = TASK_ID,
     phases: tuple[str, ...] = PHASES,
+    task_suite_name: str = "libero_10",
+    bddl_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Validate STRIDER's plain schedule and render one LIBERO task schema."""
 
+    validate_task(task_suite_name, task_id)
     source = pathlib.Path(source)
     raw = json.loads(source.read_text())
     if not isinstance(raw, dict):
@@ -74,7 +84,9 @@ def render_libero_schedule(
 
     payload = {
         "schema": (
-            SCHEDULE_SCHEMA if task_id == TASK_ID and phases == PHASES else "strider-libero-task-fine-phase-schedule-v1"
+            SCHEDULE_SCHEMA
+            if task_suite_name == "libero_10" and task_id == TASK_ID and phases == PHASES
+            else "strider-libero-task-fine-phase-schedule-v1"
         ),
         "status": "AI_CANDIDATE_NOT_PROMOTED_OR_EVALUATED",
         "authority": AUTHORITY,
@@ -86,17 +98,25 @@ def render_libero_schedule(
         "source_schedule_sha256": _sha256(source),
         "phase_schedule": [[f"task_{task_id:02d}:{phase}", speeds[phase]] for phase in phases],
     }
+    if task_suite_name != "libero_10" or bddl_sha256 is not None:
+        payload["task_suite_name"] = task_suite_name
+    if bddl_sha256 is not None:
+        payload["bddl_sha256"] = bddl_sha256
     _write_json_once(destination, payload)
     return payload
 
 
-def validate_search_run_config(config_path: pathlib.Path, *, schedule_path: pathlib.Path, num_trials: int) -> None:
+def validate_search_run_config(
+    config_path: pathlib.Path, *, schedule_path: pathlib.Path, num_trials: int, route: CampaignRoute | None = None
+) -> None:
     """Require the evaluator request to match STRIDER's reserved run contract."""
 
     config = json.loads(pathlib.Path(config_path).read_text())
     schedule = json.loads(pathlib.Path(schedule_path).read_text())
     if not isinstance(config, dict):
         raise ValueError("search config must be a JSON object")
+    if route is not None and config.get("task_identity") != dataclasses.asdict(route.identity):
+        raise ValueError("reserved config task_identity does not match route")
     if config.get("speed_schedule") != schedule:
         raise ValueError("config speed_schedule does not match schedule.json")
     if config.get("requested_rollouts") != num_trials:
@@ -125,7 +145,16 @@ def build_server_command(args: Args, *, rendered_schedule: pathlib.Path, commit:
 
 
 def run(args: Args) -> None:
-    _validate_args(args)
+    route = _validate_args(args)
+    if route is not None:
+        # Resolve the actual evaluator task without constructing an environment.
+        from libero.libero import benchmark
+        from libero.libero import get_libero_path
+
+        task = benchmark.get_benchmark_dict()[args.task_suite_name]().get_task(args.task_id)
+        verify_benchmark_bddl(
+            route, pathlib.Path(get_libero_path("bddl_files")) / task.problem_folder / task.bddl_file
+        )
     repo = pathlib.Path(__file__).resolve().parents[3]
     commit = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
     args.run_dir.mkdir(parents=True, exist_ok=True)
@@ -135,6 +164,7 @@ def run(args: Args) -> None:
         args.run_dir / "config.json",
         schedule_path=args.schedule,
         num_trials=args.num_trials,
+        route=route,
     )
     rendered_schedule = args.run_dir / "libero_schedule.json"
     phases = tuple(item.strip() for item in args.phase_names.split(",") if item.strip())
@@ -143,6 +173,8 @@ def run(args: Args) -> None:
         rendered_schedule,
         task_id=args.task_id,
         phases=phases,
+        task_suite_name=args.task_suite_name,
+        bddl_sha256=route.identity.bddl_sha256 if route is not None else None,
     )
     server_log_path = args.run_dir / "server.log"
     server_command = build_server_command(args, rendered_schedule=rendered_schedule, commit=commit)
@@ -177,7 +209,7 @@ def run(args: Args) -> None:
                     run_dir=args.run_dir,
                     host=args.server_host,
                     port=args.server_port,
-                    task_suite_name="libero_10",
+                    task_suite_name=args.task_suite_name,
                     task_start=args.task_id,
                     task_count=1,
                     num_trials_per_task=args.num_trials,
@@ -194,7 +226,14 @@ def run(args: Args) -> None:
             _stop_process_group(server)
 
 
-def _validate_args(args: Args) -> None:
+def verify_benchmark_bddl(route: CampaignRoute, actual_bddl: pathlib.Path) -> None:
+    """Require the benchmark-resolved task to match the registered source bytes."""
+    if file_sha256(actual_bddl) != route.identity.bddl_sha256:
+        raise ValueError("benchmark BDDL does not match the suite/task route")
+
+
+def _validate_args(args: Args) -> CampaignRoute | None:
+    validate_task(args.task_suite_name, args.task_id)
     for name, path in (
         ("schedule", args.schedule),
         ("phase_checkpoint", args.phase_checkpoint),
@@ -209,11 +248,19 @@ def _validate_args(args: Args) -> None:
         raise ValueError("server_port must be within 1..65535")
     if args.server_start_timeout_seconds <= 0:
         raise ValueError("server_start_timeout_seconds must be positive")
-    if args.task_id < 0:
-        raise ValueError("task_id must be nonnegative")
     phases = tuple(item.strip() for item in args.phase_names.split(",") if item.strip())
     if not phases or len(set(phases)) != len(phases):
         raise ValueError("phase_names must contain unique comma-separated names")
+    if args.route_registry is None:
+        if args.task_suite_name != "libero_10":
+            raise ValueError("non-legacy suites require a suite-bound route_registry")
+        return None
+    route = select_route(
+        load_routes(args.route_registry), suite=args.task_suite_name, task_id=args.task_id, arm="strider"
+    )
+    if route.phase_names != phases or route.phase_checkpoint.path != args.phase_checkpoint.resolve():
+        raise ValueError("runner phase checkpoint/names do not match route")
+    return route
 
 
 def _wait_for_server(
