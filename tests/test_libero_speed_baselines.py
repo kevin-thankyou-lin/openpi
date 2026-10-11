@@ -512,6 +512,7 @@ def test_horizon_strider_plans_once_without_crossing_protected_phase(tmp_path, c
         fast_stride=3,
         device="cpu",
         predictor_factory=lambda *_args, **_kwargs: Predictor(),
+        legacy_input_mode=True,
         composer=composer,
     )
     selector.observe(
@@ -568,6 +569,7 @@ def test_horizon_strider_supports_task3_schedule(tmp_path, composer):
         fast_stride=3,
         device="cpu",
         predictor_factory=lambda *_args, **_kwargs: Predictor(),
+        legacy_input_mode=True,
         composer=composer,
     )
     selector.observe(

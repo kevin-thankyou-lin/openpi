@@ -25,6 +25,10 @@ def _registry(tmp_path, *, suite="libero_spatial", method="strider", task_id=0):
     def asset(path):
         return {"path": str(path.relative_to(tmp_path)), "sha256": routes.file_sha256(path)}
 
+    dataset = folder / "dataset.json"
+    dataset.write_text(json.dumps({"schema":"strider-libero-prepared-phase-dataset-v1",
+        "identity":{"suite":suite,"task_id":task_id,"bddl_sha256":routes.file_sha256(bddl)},
+        "preprocessing":routes.PREPROCESSING,"classes":[{"name":"approach"},{"name":"grasp"}]}))
     entry = {"suite": suite, "task_id": task_id, "bddl": asset(bddl), "method": method}
     if method == "uniform":
         entry["uniform_stride"] = 2
@@ -32,6 +36,7 @@ def _registry(tmp_path, *, suite="libero_spatial", method="strider", task_id=0):
         entry.update(
             phase_checkpoint=asset(checkpoint),
             ontology=asset(ontology),
+            dataset_manifest=asset(dataset),
             phase_names=["approach", "grasp"],
             asset_binding={"suite": suite, "task_id": task_id, "bddl_sha256": entry["bddl"]["sha256"]},
         )
@@ -92,7 +97,7 @@ def test_support_for_90_is_not_campaign_authorization(tmp_path):
     assert len(routes.load_routes(path, allowed_suites=("libero_90",))) == 1
 
 
-@pytest.mark.parametrize("field", ["phase_checkpoint", "ontology", "asset_binding"])
+@pytest.mark.parametrize("field", ["phase_checkpoint", "ontology", "asset_binding", "dataset_manifest"])
 def test_challenger_requires_explicit_asset_binding(tmp_path, field):
     path, entry = _registry(tmp_path)
     del entry[field]
@@ -110,7 +115,7 @@ def test_challenger_rejects_cross_task_binding(tmp_path, field, value):
         routes.load_routes(path)
 
 
-@pytest.mark.parametrize("field", ["bddl", "phase_checkpoint", "ontology"])
+@pytest.mark.parametrize("field", ["bddl", "phase_checkpoint", "ontology", "dataset_manifest"])
 def test_asset_mutation_rejected_at_load_and_reselection(tmp_path, field):
     path, entry = _registry(tmp_path)
     loaded = routes.load_routes(path)

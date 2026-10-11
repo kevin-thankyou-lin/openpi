@@ -75,12 +75,15 @@ class Args:
     strider_phase_repo: Optional[pathlib.Path] = None
     strider_schedule: Optional[pathlib.Path] = None
     strider_device: str = "cuda"
+    strider_legacy_input_mode: bool = False
     resume: bool = False
     save_strider_telemetry: bool = False
 
 
 def eval_speed_baseline(args: Args, *, campaign=None) -> None:
     _validate_args(args)
+    if args.method == "strider" and campaign is None and not args.strider_legacy_input_mode:
+        raise ValueError("non-campaign STRIDER requires explicit strider_legacy_input_mode")
     if campaign is not None:
         campaign.validate_args(args)
     args.run_dir.mkdir(parents=True, exist_ok=True)
@@ -135,8 +138,6 @@ def eval_speed_baseline(args: Args, *, campaign=None) -> None:
     # disable protocol pings for this local deterministic evaluator connection.
     policy = websocket_client_policy.WebsocketClientPolicy(args.host, args.port, ping_interval=None)
     policy_metadata = policy.get_server_metadata()
-    if campaign is not None:
-        campaign.connect(policy_metadata)
     selector = SupSelectorClient(args.selector_host, args.selector_port) if args.method == "sup" else None
     strider = (
         StriderPhaseSelector(
@@ -145,6 +146,8 @@ def eval_speed_baseline(args: Args, *, campaign=None) -> None:
             schedule=args.strider_schedule,
             fast_stride=args.fast_stride,
             device=args.strider_device,
+            phase_input_binding=(campaign.policy_spec.route.phase_input_binding() if campaign is not None else None),
+            legacy_input_mode=args.strider_legacy_input_mode,
         )
         if args.method == "strider"
         else None
@@ -159,6 +162,11 @@ def eval_speed_baseline(args: Args, *, campaign=None) -> None:
             evaluator_commit=_git_head(),
             fast_stride=args.fast_stride,
         )
+
+    if campaign is not None:
+        campaign.connect(policy_metadata)
+        if strider is not None:
+            campaign.write_phase_input_proof(strider.phase_input_proof)
 
     task_suite = benchmark.get_benchmark_dict()[args.task_suite_name]()
     videos_dir = args.run_dir / "videos"

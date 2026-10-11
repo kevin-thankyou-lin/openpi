@@ -257,8 +257,13 @@ def test_strider_metadata_remains_compatible_with_frozen_evaluator(spec):
     checkpoint.write_bytes(b"test checkpoint")
     ontology = spec.path.parent / "ontology.json"
     ontology.write_text(json.dumps({"task_id": 0, "phases": ["approach", "grasp"]}))
+    dataset = spec.path.parent / "phase-dataset.json"
+    dataset.write_text(json.dumps({"schema":"strider-libero-prepared-phase-dataset-v1",
+        "identity":dataclasses.asdict(spec.route.identity), "preprocessing":cr.PREPROCESSING,
+        "classes":[{"name":"approach"},{"name":"grasp"}]}))
     entry.pop("uniform_stride")
     entry.update(method="strider", phase_checkpoint=_asset(checkpoint), ontology=_asset(ontology),
+                 dataset_manifest=_asset(dataset),
                  phase_names=["approach", "grasp"], asset_binding=dataclasses.asdict(spec.route.identity))
     spec.route_registry.path.write_text(json.dumps(registry))
     plain = spec.path.parent / "schedule.json"

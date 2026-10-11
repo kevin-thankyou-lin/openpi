@@ -67,6 +67,7 @@ def bind_phase_inputs(
     phase_names: tuple[str, ...],
     history_length: int = 4,
     horizon: int = 10,
+    checkpoint_bytes: bytes | None = None,
 ) -> PhaseInputContract:
     """Verify provenance/shape before starting an episode, without model inference.
 
@@ -77,7 +78,10 @@ def bind_phase_inputs(
     raw = Path(manifest_path).read_bytes()
     if hashlib.sha256(raw).hexdigest() != expected_manifest_sha256:
         raise ValueError("phase dataset manifest SHA mismatch")
-    if _sha(Path(checkpoint_path)) != expected_checkpoint_sha256:
+    checkpoint_digest = (
+        _sha(Path(checkpoint_path)) if checkpoint_bytes is None else hashlib.sha256(checkpoint_bytes).hexdigest()
+    )
+    if checkpoint_digest != expected_checkpoint_sha256:
         raise ValueError("phase checkpoint SHA mismatch")
     manifest = json.loads(raw)
     if manifest.get("identity") != dict(identity):

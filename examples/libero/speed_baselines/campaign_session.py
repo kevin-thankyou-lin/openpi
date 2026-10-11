@@ -148,6 +148,8 @@ class CampaignSession:
             "eval_entrypoint": self.repo / "scripts/eval_campaign_libero.py",
             "server_entrypoint": self.repo / "scripts/serve_campaign_libero.py",
         }
+        if self.policy_spec.route.method == "strider":
+            expected_files["phase_preprocessing"] = Path(__file__).with_name("phase_preprocessing.py")
         if not expected_files.keys() <= self.sources.keys():
             raise ValueError("missing executable source pins")
         if any(self.sources[key].path != path.resolve() for key, path in expected_files.items()):
@@ -218,6 +220,9 @@ class CampaignSession:
         ):
             raise ValueError("STRIDER assets differ from registered arm")
         if route.method == "strider":
+            if args.strider_legacy_input_mode:
+                raise ValueError("campaign forbids historical phase input mode")
+            route.phase_input_binding()
             phase = self.spec["phase_runtime"]
             verify_phase_runtime(
                 root=phase["root"],
@@ -245,6 +250,12 @@ class CampaignSession:
             chunk_size=10,
             expected_sha256=self.spec["source_pins"]["controller_sha256"],
         )
+
+    def write_phase_input_proof(self, proof):
+        if self.policy_spec.route.method != "strider" or proof is None:
+            raise ValueError("checked phase proof required")
+        self.policy_spec.route.verify_phase_input_proof(proof)
+        write_new(self.output / "phase-input-proof.json", proof)
 
     def connect(self, metadata):
         validate_metadata(metadata, self.policy_spec)

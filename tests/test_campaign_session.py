@@ -286,3 +286,50 @@ def test_real_episode_hook_boundaries_preserve_actions_and_settling(tmp_path):
         assert result["success"]
         assert result["env_steps"] == 2
     assert baseline.actions == instrumented.actions
+
+
+def test_phase_manifest_and_actual_helper_pin_required_before_scene_start(session_spec):
+    spec = json.loads(session_spec.read_text())
+    policy_path = Path(spec["policy_spec"]["path"])
+    policy = json.loads(policy_path.read_text())
+    route_path = Path(policy["route_registry"]["path"])
+    registry = json.loads(route_path.read_text())
+    entry = registry["routes"][0]
+    identity = {"suite":entry["suite"], "task_id":entry["task_id"], "bddl_sha256":entry["bddl"]["sha256"]}
+    checkpoint = session_spec.parent / "phase.pt"
+    checkpoint.write_bytes(b"opaque phase checkpoint")
+    ontology = session_spec.parent / "ontology.json"
+    ontology.write_text(json.dumps({"task_id":0,"phases":["approach"]}))
+    dataset = session_spec.parent / "phase-manifest.json"
+    dataset.write_text(json.dumps({"schema":"strider-libero-prepared-phase-dataset-v1", "identity":identity,
+        "preprocessing":cr.PREPROCESSING,"classes":[{"name":"approach"}]}))
+    entry.pop("uniform_stride")
+    entry.update(method="strider",phase_checkpoint=asset(checkpoint),ontology=asset(ontology),
+        dataset_manifest=asset(dataset),phase_names=["approach"],asset_binding=identity)
+    route_path.write_text(json.dumps(registry))
+    schedule = session_spec.parent / "rendered.json"
+    schedule.write_text(json.dumps({"schema":"strider-libero-task-fine-phase-schedule-v1",
+        "status":"AI_CANDIDATE_NOT_PROMOTED_OR_EVALUATED", "authority":"AI_CANDIDATE_NOT_HUMAN_ANNOTATION",
+        "requires_human_confirmation":True,"phase_schedule":[["task_00:approach",2]],
+        "task_suite_name":identity["suite"],"task_id":0,"bddl_sha256":identity["bddl_sha256"]}))
+    policy.update(arm="strider",route_registry=asset(route_path),rendered_schedule=asset(schedule))
+    policy_path.write_text(json.dumps(policy))
+    spec.update(policy_spec=asset(policy_path),purpose="search_candidate")
+    session_spec.write_text(json.dumps(spec))
+    with pytest.raises(ValueError,match="missing executable source pins"):
+        cs.CampaignSession(session_spec,repo=Path(cs.__file__).parents[3])
+    spec["implementation_sources"]["phase_preprocessing"] = asset(Path(cs.__file__).with_name("phase_preprocessing.py"))
+    session_spec.write_text(json.dumps(spec))
+    with pytest.raises(ValueError,match="challengers must restore"):
+        cs.CampaignSession(session_spec,repo=Path(cs.__file__).parents[3])
+    assert not (session_spec.parent / "budget.jsonl").exists()
+
+
+def test_implicit_noncampaign_phase_mode_refused_before_connect():
+    source = Path(cs.__file__).with_name("main.py")
+    tree = ast.parse(source.read_text())
+    function = next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=="eval_speed_baseline")
+    namespace={"Args":object,"_validate_args":lambda args:None}
+    exec(compile(ast.Module(body=[function],type_ignores=[]),str(source),"exec"),namespace)
+    with pytest.raises(ValueError,match="explicit strider_legacy_input_mode"):
+        namespace["eval_speed_baseline"](SimpleNamespace(method="strider",strider_legacy_input_mode=False))
