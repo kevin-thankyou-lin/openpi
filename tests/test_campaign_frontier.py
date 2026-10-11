@@ -10,6 +10,7 @@ PINS = {
     "task_id": 0,
     "bddl_sha256": "b" * 64,
     "policy_sha256": "a" * 64,
+    "inference_cache_sha256": "d" * 64,
     "controller_sha256": "c" * 64,
     "environment_sha256": "e" * 64,
     "reset_protocol_sha256": "f" * 64,
@@ -84,3 +85,10 @@ def test_order_duplicates_and_suite_collision_rejected():
         compare([a[0], a[0]], [a[0], a[0]])
     with pytest.raises(ValueError, match="suite"):
         compare_frontier(a, a, reference_pins=PINS, candidate_pins=dict(PINS, suite="libero_spatial"))
+
+
+def test_different_compilation_recipes_invalidate_comparison():
+    a = [episode(0, 100)]
+    with pytest.raises(ValueError, match="inference_cache_sha256"):
+        compare_frontier(a, a, reference_pins=PINS,
+                         candidate_pins=dict(PINS, inference_cache_sha256="9" * 64))

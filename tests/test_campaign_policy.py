@@ -352,7 +352,8 @@ def test_sub_micro_action_drift_fails_before_serving(spec):
     with pytest.raises(ValueError, match="canary failed"):
         _seeded(spec)
     receipt = json.loads((spec.run_dir / "inference-canary.json").read_text())
-    assert receipt["within_process_exact"] and not receipt["cross_process_exact"]
+    assert receipt["within_process_exact"]
+    assert not receipt["cross_process_exact"]
     assert 0 < receipt["cross_process_max_delta"] < 1e-6
     assert not (spec.run_dir / "inference-rng.jsonl").read_text()
 

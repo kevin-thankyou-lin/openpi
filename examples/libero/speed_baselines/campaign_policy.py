@@ -156,6 +156,7 @@ def expected_metadata(spec: PolicySpec) -> dict:
     }
     if spec.route.method == "strider":
         result.update(phase_checkpoint_sha256=spec.route.phase_checkpoint.sha256,
+                      phase_dataset_manifest_sha256=spec.route.dataset_manifest.sha256,
                       phase_schedule_sha256=spec.rendered_schedule.sha256, fast_stride=3,
                       authority="AI_CANDIDATE_NOT_HUMAN_ANNOTATION", requires_human_confirmation=True,
                       speed_schedule_status="candidate_not_promoted")

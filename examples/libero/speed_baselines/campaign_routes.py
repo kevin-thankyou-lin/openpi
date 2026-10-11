@@ -137,6 +137,8 @@ class CampaignRoute:
             raise ValueError("ontology suite mismatch")
         if "bddl_sha256" in ontology and ontology["bddl_sha256"] != self.identity.bddl_sha256:
             raise ValueError("ontology BDDL hash mismatch")
+        if "identity" in ontology and ontology["identity"] != dataclasses.asdict(self.identity):
+            raise ValueError("ontology nested identity mismatch")
 
         self.dataset_manifest.verify()
         manifest = json.loads(self.dataset_manifest.path.read_text())

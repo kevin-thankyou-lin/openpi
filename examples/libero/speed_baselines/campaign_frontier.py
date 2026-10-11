@@ -47,6 +47,7 @@ SHARED_PINS = (
     "task_id",
     "bddl_sha256",
     "policy_sha256",
+    "inference_cache_sha256",
     "controller_sha256",
     "environment_sha256",
     "reset_protocol_sha256",

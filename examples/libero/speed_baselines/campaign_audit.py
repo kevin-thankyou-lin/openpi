@@ -108,6 +108,9 @@ def audit_episode(rows, result, *, route, composer, expected_reference=None):
 
 
 def audit_run(session, *, composer):
+    if session.policy_spec.route.method == "strider":
+        proof = json.loads((session.output / "phase-input-proof.json").read_text())
+        session.policy_spec.route.verify_phase_input_proof(proof)
     payload = json.loads((session.run_dir / "results.json").read_text())
     if payload["status"] != "complete" or [e["episode_index"] for e in payload["episodes"]] != list(session.bank):
         raise ValueError("campaign bank incomplete or reordered")

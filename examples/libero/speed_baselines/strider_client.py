@@ -81,7 +81,7 @@ def load_candidate_schedule(
         raise ValueError(f"unsupported Strider schedule schema: {schema!r}")
 
     for entry in entries:
-        if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+        if not isinstance(entry, list | tuple) or len(entry) != 2:
             raise ValueError(f"invalid Strider phase entry: {entry!r}")
         key, speed = entry
         key = str(key)
@@ -91,7 +91,7 @@ def load_candidate_schedule(
             task_ids.add(int(key.split(":", 1)[0][5:]))
         except ValueError as exc:
             raise ValueError(f"invalid Strider phase key: {key!r}") from exc
-        if isinstance(speed, bool) or not isinstance(speed, (int, float)):
+        if isinstance(speed, bool) or not isinstance(speed, int | float):
             raise ValueError(f"{key} uses non-numeric candidate speed {speed!r}")
         speed = float(speed)
         if speed not in STRIDER_ALLOWED_SPEEDS or speed > fast_stride:
@@ -233,7 +233,7 @@ class StriderPhaseSelector:
         task_ids = {
             int(str(entry[0]).split(":", 1)[0][5:])
             for entry in phase_entries
-            if isinstance(entry, (list, tuple)) and len(entry) == 2
+            if isinstance(entry, list | tuple) and len(entry) == 2
         }
         if len(task_ids) != 1:
             raise ValueError("horizon evaluator requires exactly one task in the schedule")

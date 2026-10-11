@@ -115,6 +115,18 @@ def test_challenger_rejects_cross_task_binding(tmp_path, field, value):
         routes.load_routes(path)
 
 
+def test_ontology_cannot_contradict_its_outer_binding(tmp_path):
+    path, entry = _registry(tmp_path)
+    ontology_path = tmp_path / entry["ontology"]["path"]
+    ontology = json.loads(ontology_path.read_text())
+    ontology["identity"] = dict(entry["asset_binding"], suite="libero_goal")
+    ontology_path.write_text(json.dumps(ontology))
+    entry["ontology"]["sha256"] = routes.file_sha256(ontology_path)
+    _save(path, [entry])
+    with pytest.raises(ValueError, match="nested identity"):
+        routes.load_routes(path)
+
+
 @pytest.mark.parametrize("field", ["bddl", "phase_checkpoint", "ontology", "dataset_manifest"])
 def test_asset_mutation_rejected_at_load_and_reselection(tmp_path, field):
     path, entry = _registry(tmp_path)
