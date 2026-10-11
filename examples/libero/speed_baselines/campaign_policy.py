@@ -228,10 +228,11 @@ class SeededPolicy:
             ref = np.load(self.spec.inference_canary_reference.path, allow_pickle=False)
             if ref.shape != actions[2].shape:
                 raise ValueError("canary reference shape mismatch")
-            matched = bool(np.allclose(ref, actions[2], rtol=0, atol=1e-6))
+            matched = bool(ref.dtype == actions[2].dtype and np.array_equal(ref, actions[2]))
             receipt.update(reference=str(self.spec.inference_canary_reference.path),
                            cross_process_max_delta=float(np.max(np.abs(ref - actions[2]))),
-                           cross_process_tolerance=1e-6, cross_process_passed=matched)
+                           cross_process_tolerance=0.0, cross_process_exact=matched,
+                           cross_process_passed=matched)
             receipt["passed"] = bool(same and matched)
         with (self.spec.run_dir / "inference-canary-actions.npy").open("xb") as stream:
             np.save(stream, actions[2], allow_pickle=False)

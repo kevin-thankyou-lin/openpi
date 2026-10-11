@@ -92,7 +92,7 @@ def audit_episode(rows, result, *, route, composer, expected_reference=None):
             initial[0]["observations"] == expected_reference["observations"], "restored initial observations differ"
         )
         require(bool(plans), "no initial policy receipt for matched comparison")
-        for key in ("request_sha256", "actions_sha256", "rng_before"):
+        for key in ("request_sha256", "actions_sha256", "rng_before", "rng_after"):
             require(
                 plans[0]["receipt"][key] == expected_reference["first_receipt"][key], f"restored first {key} differs"
             )

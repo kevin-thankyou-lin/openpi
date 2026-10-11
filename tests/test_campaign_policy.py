@@ -334,7 +334,22 @@ def test_failing_canary_reference_blocks_serving(spec):
         _seeded(spec)
     receipt = json.loads((spec.run_dir / "inference-canary.json").read_text())
     assert not receipt["passed"] and not receipt["cross_process_passed"]
-    assert receipt["cross_process_tolerance"] == 1e-6
+    assert receipt["cross_process_tolerance"] == 0.0
+
+
+def test_sub_micro_action_drift_fails_before_serving(spec):
+    reference = spec.path.parent / "reference.npy"
+    np.save(reference, np.full((10, 7), 1.0 + 5e-7, dtype=np.float32), allow_pickle=False)
+    payload = json.loads(spec.path.read_text())
+    payload["inference_canary_reference"] = _asset(reference)
+    spec.path.write_text(json.dumps(payload))
+    spec = cp.load_policy_spec(spec.path)
+    with pytest.raises(ValueError, match="canary failed"):
+        _seeded(spec)
+    receipt = json.loads((spec.run_dir / "inference-canary.json").read_text())
+    assert receipt["within_process_exact"] and not receipt["cross_process_exact"]
+    assert 0 < receipt["cross_process_max_delta"] < 1e-6
+    assert not (spec.run_dir / "inference-rng.jsonl").read_text()
 
 
 def test_import_and_preflight_cli_forbid_gpu_and_simulator_modules(spec):

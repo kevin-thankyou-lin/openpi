@@ -79,7 +79,7 @@ def test_success_may_end_mid_chunk_without_being_a_discarded_replan(evidence):
     assert audit_episode(rows, result, route=route, composer=composer, expected_reference=ref)["passed"]
 
 
-@pytest.mark.parametrize("fault", ["action", "duplicate_source", "rng", "phase", "initial", "truncated_failure"])
+@pytest.mark.parametrize("fault", ["action", "duplicate_source", "rng", "rng_after", "phase", "initial", "truncated_failure"])
 def test_rejects_corrupt_or_nonmatching_rollouts(evidence, fault):
     rows, result, route, composer = copy.deepcopy(evidence)
     ref = {"observations": rows[1]["observations"], "first_receipt": copy.deepcopy(rows[2]["receipt"])}
@@ -89,6 +89,8 @@ def test_rejects_corrupt_or_nonmatching_rollouts(evidence, fault):
         rows[4]["source_indices"] = [0, 1]
     elif fault == "rng":
         rows[2]["receipt"]["rng_before"] = [0, 3]
+    elif fault == "rng_after":
+        ref["first_receipt"]["rng_after"] = [9, 9]
     elif fault == "phase":
         result["phase_decisions"] = [{}]
     elif fault == "initial":
