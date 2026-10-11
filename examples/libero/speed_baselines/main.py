@@ -79,8 +79,10 @@ class Args:
     save_strider_telemetry: bool = False
 
 
-def eval_speed_baseline(args: Args) -> None:
+def eval_speed_baseline(args: Args, *, campaign=None) -> None:
     _validate_args(args)
+    if campaign is not None:
+        campaign.validate_args(args)
     args.run_dir.mkdir(parents=True, exist_ok=True)
     lock_stream = (args.run_dir / "run.lock").open("w")
     try:
@@ -102,6 +104,9 @@ def eval_speed_baseline(args: Args) -> None:
         "native" if args.method == "native" else "sup-supplement-unclip-panda-speed-0.02-mujoco-step"
     )
     config["action_composition"] = "controller-space sum-position left-compose-rotation last-gripper"
+    if campaign is not None:
+        config["campaign_session_sha256"] = campaign.sha256
+        config["ordered_episode_indices"] = list(campaign.bank)
     if args.method == "strider":
         config["strider_checkpoint_sha256"] = _sha256(args.strider_checkpoint)
         config["strider_schedule_sha256"] = _sha256(args.strider_schedule)
@@ -123,11 +128,15 @@ def eval_speed_baseline(args: Args) -> None:
     if args.method != "native":
         apply_sup_controller_patches()
     composer = SupActionComposer.from_robosuite()
+    if campaign is not None:
+        campaign.validate_controller(composer)
     # First inference can include accelerator compilation and exceed the websocket
     # library's 20-second keepalive timeout. Inference itself remains blocking, so
     # disable protocol pings for this local deterministic evaluator connection.
     policy = websocket_client_policy.WebsocketClientPolicy(args.host, args.port, ping_interval=None)
     policy_metadata = policy.get_server_metadata()
+    if campaign is not None:
+        campaign.connect(policy_metadata)
     selector = SupSelectorClient(args.selector_host, args.selector_port) if args.method == "sup" else None
     strider = (
         StriderPhaseSelector(
@@ -162,12 +171,19 @@ def eval_speed_baseline(args: Args) -> None:
         for task_id in tqdm.tqdm(task_ids):
             task = task_suite.get_task(task_id)
             initial_states = task_suite.get_task_init_states(task_id)
+            if campaign is not None:
+                bddl_path = pathlib.Path(get_libero_path("bddl_files")) / task.problem_folder / task.bddl_file
+                campaign.validate_task(task, initial_states, bddl_path)
             env, task_description = _get_libero_env(task, args.seed)
             try:
-                for episode_index in range(args.num_trials_per_task):
+                bank = range(args.num_trials_per_task) if campaign is None else campaign.bank
+                for episode_index in bank:
                     key = (task_id, episode_index)
                     if key in completed_keys:
                         continue
+                    episode_policy = policy if campaign is None else campaign.before_episode(episode_index, policy)
+                    # Keep the legacy call signature unchanged for existing scoped adapters.
+                    hooks = {} if campaign is None else {"campaign": campaign}
                     result = _run_episode(
                         env=env,
                         task_description=task_description,
@@ -175,12 +191,15 @@ def eval_speed_baseline(args: Args) -> None:
                         task_id=task_id,
                         episode_index=episode_index,
                         args=args,
-                        policy=policy,
+                        policy=episode_policy,
                         composer=composer,
                         selector=selector,
                         strider=strider,
                         videos_dir=videos_dir,
+                        **hooks,
                     )
+                    if campaign is not None:
+                        campaign.finish_episode(result)
                     episodes.append(result)
                     payload = {
                         "status": "running",
@@ -221,10 +240,13 @@ def _run_episode(
     selector: SupSelectorClient | None,
     strider: StriderPhaseSelector | None,
     videos_dir: pathlib.Path,
+    campaign=None,
 ) -> dict:
     logging.info("Task %d: %s", task_id, task_description)
     env.reset()
     obs = env.set_init_state(initial_state)
+    if campaign is not None:
+        obs = campaign.after_set_init_state(env, obs)
     env_steps = 0
     source_actions_consumed = 0
     action_plan: collections.deque = collections.deque()
@@ -242,6 +264,9 @@ def _run_episode(
         obs, _reward, done, _info = env.step(LIBERO_DUMMY_ACTION)
         if done:
             break
+
+    if campaign is not None:
+        campaign.after_warmup(env, obs)
 
     while env_steps < horizon and not done:
         image = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
@@ -295,12 +320,16 @@ def _run_episode(
                     source_stride=action_slice.stride,
                 )
             )
+        if campaign is not None:
+            campaign.before_action(env, obs, action_slice, env_steps, decision)
         obs, _reward, done, _info = env.step(action_slice.action.tolist())
         env_steps += 1
         source_actions_consumed += action_slice.stride
         frames.append(image)
 
     success = bool(done)
+    if campaign is not None:
+        campaign.after_loop(env, obs, success, env_steps)
     suffix = "success" if success else "failure"
     video_path = videos_dir / f"task_{task_id:02d}_episode_{episode_index:02d}_{suffix}.mp4"
     telemetry_path = None
