@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from examples.libero.speed_baselines import prepare_suite_phases as m
+from examples.libero.speed_baselines.phase_preprocessing import PREPROCESSING
 
 
 def write(path, value):
@@ -155,8 +156,8 @@ def test_trainer_artifacts_revisits_train_only_normalization_and_exclusions(pack
         "dtype": "uint8",
         "layout": "HWC",
         "color": "RGB",
-        "height": 84,
-        "width": 84,
+        "height": 8,
+        "width": 8,
         "resize": "pillow-bilinear",
     }
     assert manifest["preprocessing"]["proprio_feature_names"] == [
@@ -165,6 +166,15 @@ def test_trainer_artifacts_revisits_train_only_normalization_and_exclusions(pack
     ]
     with pytest.raises(FileExistsError):
         build(package)
+
+
+def test_default_image_size_matches_exported_arrays_and_runtime_contract(package):
+    root, _, _, _ = package
+    m.prepare(root / "inventory.json", root / "annotations.json", root / "out", minimum_successes=3)
+    manifest = m.read(root / "out/manifest.json")
+    assert manifest["preprocessing"] == PREPROCESSING
+    for episode in manifest["episodes"]:
+        assert np.load(root / "out" / episode["images"]).shape == (episode["num_frames"], 84, 84, 3)
 
 
 @pytest.mark.parametrize("bad_episode", [20, 30, True])
@@ -196,7 +206,7 @@ def test_union_of_nonoverlapping_capture_units(package):
 
 
 def test_source_hash_corruption_rejected(package):
-    root, inventory, _, _ = package
+    _root, inventory, _, _ = package
     policy = Path(inventory["units"][0]["policy"]["path"])
     policy.write_text(policy.read_text() + " ")
     with pytest.raises(ValueError, match="hash mismatch"):
@@ -238,7 +248,7 @@ def test_pending_annotations_cannot_generate_labels(package):
     ],
 )
 def test_no_unreviewed_gaps_or_overlap(segments):
-    with pytest.raises(ValueError, match="cover every frame|incomplete reviewed"):
+    with pytest.raises(ValueError, match=r"cover every frame|incomplete reviewed"):
         m.segment_labels(segments, ["approach", "acquire"], 6)
 
 
@@ -278,7 +288,7 @@ def test_reject_post_action_or_privileged_features(package, field):
     ann["episodes"][0]["metadata_sha256"] = ref["sha256"]
     write(root / "inventory.json", inventory)
     write(root / "annotations.json", ann)
-    with pytest.raises(ValueError, match="pre-action frame|robot joint/gripper"):
+    with pytest.raises(ValueError, match=r"pre-action frame|robot joint/gripper"):
         build(package)
 
 

@@ -322,8 +322,8 @@ def prepare(
                 "dtype": "uint8",
                 "layout": "HWC",
                 "color": "RGB",
-                "height": 84,
-                "width": 84,
+                "height": image_size,
+                "width": image_size,
                 "resize": "pillow-bilinear",
             },
             "proprio_feature_names": [f"robot0.joint.{i}" for i in range(7)]
