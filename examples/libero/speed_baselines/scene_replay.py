@@ -79,13 +79,36 @@ def array_sha256(value):
     return hashlib.sha256(a.tobytes()).hexdigest()
 
 
-def _validate_env_identity(env, identity):
+def _validate_env_identity(env, identity, initial_state=None):
     base = _base(env)
     if hashlib.sha256(pathlib.Path(base.bddl_file_name).read_bytes()).hexdigest() != identity.bddl_sha256:
         raise SceneReplayError("Environment BDDL differs from the pinned scene")
-    state = base.sim.get_state().flatten()
-    if array_sha256(state) != identity.initial_state_sha256:
-        raise SceneReplayError("Environment initial pose differs; restore only immediately after set_init_state")
+    state = np.asarray(base.sim.get_state().flatten())
+    if initial_state is not None:
+        original = np.asarray(initial_state)
+        model = base.sim.model._model
+        expected_shape = (1 + model.nq + model.nv,)
+        if original.dtype != np.dtype("float64") or original.shape != expected_shape or not np.isfinite(original).all():
+            raise SceneReplayError("Original initial state must be finite float64 time/qpos/qvel")
+        if array_sha256(original) != identity.initial_state_sha256:
+            raise SceneReplayError("Original initial state differs from its pinned SHA256")
+        if state.dtype != original.dtype or state.shape != original.shape:
+            raise SceneReplayError("Environment initial state layout differs from the original")
+    if array_sha256(state) == identity.initial_state_sha256:
+        return
+    if initial_state is not None:
+        import mujoco
+
+        _check_mujoco_version(mujoco)
+        # LIBERO set_init_state calls mj_forward once. That normalizes free/ball
+        # joint quaternions in qpos, even when their norm differs only by an ULP.
+        # Normalize a COPY of the pinned original, never the environment state.
+        # One normalization is intentional: it need not be byte-idempotent.
+        expected = original.copy()
+        mujoco.mj_normalizeQuat(model, expected[1 : 1 + model.nq])
+        if state.tobytes() == expected.tobytes():
+            return
+    raise SceneReplayError("Environment initial pose differs; restore only immediately after set_init_state")
 
 
 def _canonical_sha256(x):
@@ -296,9 +319,9 @@ def _restore_snapshot(env, snapshot):
     return obs
 
 
-def capture_scene(env, observations, *, identity: SceneIdentity) -> dict[str, Any]:
-    """Capture the official initialized scene before any settling control."""
-    _validate_env_identity(env, identity)
+def capture_scene(env, observations, *, identity: SceneIdentity, initial_state=None) -> dict[str, Any]:
+    """Capture before settling; supply pinned raw state to allow one quaternion normalization."""
+    _validate_env_identity(env, identity, initial_state)
     return bind_snapshot(_capture_snapshot(env, observations, identity.episode_index), identity=identity)
 
 
@@ -355,7 +378,7 @@ def load_scene(path, *, expected_sha256: str, expected_identity: SceneIdentity) 
     return scene
 
 
-def restore_scene(env, scene, *, expected_identity: SceneIdentity):
+def restore_scene(env, scene, *, expected_identity: SceneIdentity, initial_state=None):
     """Restore initialization only; never advances physics or reseeds a new pose.
 
     The current environment must already contain the pinned official init state.
@@ -363,7 +386,7 @@ def restore_scene(env, scene, *, expected_identity: SceneIdentity):
     fatal for that episode: do not continue stepping a partially restored state.
     """
     _validate_scene(scene, expected_identity)
-    _validate_env_identity(env, expected_identity)
+    _validate_env_identity(env, expected_identity, initial_state)
     model = _base(env).sim.model._model
     actual = model_fingerprints(model)
     expected = scene["snapshot"]["payload"]["model_fingerprints"]

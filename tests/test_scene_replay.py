@@ -298,3 +298,87 @@ def test_only_known_portable_buffer_types_are_accepted():
     np.testing.assert_array_equal(target.buf, ring.buf)
     assert target.ptr == ring.ptr
     assert holder.recent_values is target
+
+
+@pytest.fixture
+def normalized_environment(environment):
+    """Mock only the native normalization; test guard and replay without physics."""
+    env, identity = environment
+    model = env.sim.model._model
+    model.nq, model.nv = 5, 3
+    # Four quaternion components, one ordinary qpos, then three qvel.
+    raw = np.array([0., -0.526621538951244, 0., 0., 0.8500998498486068, 7., 8., 9., 10.])
+    identity = dataclasses.replace(identity, initial_state_sha256=replay.array_sha256(raw))
+
+    def normalize(model, qpos):
+        qpos[:4] /= np.linalg.norm(qpos[:4])
+
+    sys.modules["mujoco"].mj_normalizeQuat = normalize
+    expected = raw.copy()
+    normalize(model, expected[1:6])
+    assert expected.tobytes() != raw.tobytes()
+    env.sim.data._data.integration[:9] = expected
+    return env, identity, raw
+
+
+def test_once_normalized_capture_restore_keeps_raw_identity(normalized_environment):
+    env, identity, raw = normalized_environment
+    original_bytes = raw.tobytes()
+    integration = env.sim.data._data.integration.copy()
+    scene = replay.capture_scene(env, env._get_observations(), identity=identity, initial_state=raw)
+    assert scene["identity"]["initial_state_sha256"] == replay.array_sha256(raw)
+    assert raw.tobytes() == original_bytes
+    assert env.sim.data._data.integration.tobytes() == integration.tobytes()
+
+    # Restore's forward may normalize again. The existing second mj_setState
+    # must preserve the captured integration bytes despite that non-idempotence.
+    def forward():
+        env.sim.data._data.integration[1] += 0.125
+        env.sim.data._data.qacc[:] = -5
+
+    env.sim.forward = forward
+    obs = replay.restore_scene(env, scene, expected_identity=identity, initial_state=raw)
+    assert env.sim.data._data.integration.tobytes() == integration.tobytes()
+    assert replay.capture_scene(env, obs, identity=identity, initial_state=raw) == scene
+    assert raw.tobytes() == original_bytes
+
+
+def test_normalized_state_requires_original_pinned_bytes(normalized_environment):
+    env, identity, raw = normalized_environment
+    with pytest.raises(replay.SceneReplayError, match="initial pose differs"):
+        replay.capture_scene(env, env._get_observations(), identity=identity)
+    with pytest.raises(replay.SceneReplayError, match="pinned SHA256"):
+        replay.capture_scene(env, env._get_observations(), identity=identity, initial_state=raw + 1)
+    # Even a byte-exact raw environment cannot bypass bad supplied evidence.
+    env.sim.data._data.integration[:9] = raw
+    with pytest.raises(replay.SceneReplayError, match="pinned SHA256"):
+        replay.capture_scene(env, env._get_observations(), identity=identity, initial_state=raw + 1)
+    replay.capture_scene(env, env._get_observations(), identity=identity, initial_state=raw)
+
+
+@pytest.mark.parametrize("index", range(9))
+def test_one_ulp_anywhere_beyond_expected_normalization_rejected(normalized_environment, index):
+    env, identity, raw = normalized_environment
+    scene = replay.capture_scene(env, env._get_observations(), identity=identity, initial_state=raw)
+    state = env.sim.data._data.integration
+    state[index] = np.nextafter(state[index], np.inf)
+    before = state.tobytes()
+    with pytest.raises(replay.SceneReplayError, match="initial pose differs"):
+        replay.restore_scene(env, scene, expected_identity=identity, initial_state=raw)
+    assert state.tobytes() == before
+
+
+@pytest.mark.parametrize(
+    "bad", [lambda a: a.astype(np.float32), lambda a: a.reshape(3, 3), lambda a: a[:-1], lambda a: a * np.nan]
+)
+def test_original_state_layout_is_fail_closed(normalized_environment, bad):
+    env, identity, raw = normalized_environment
+    with pytest.raises(replay.SceneReplayError, match="finite float64"):
+        replay.capture_scene(env, env._get_observations(), identity=identity, initial_state=bad(raw))
+
+
+def test_normalization_requires_pinned_mujoco(normalized_environment, monkeypatch):
+    env, identity, raw = normalized_environment
+    monkeypatch.setattr(sys.modules["mujoco"], "__version__", "3.0.0")
+    with pytest.raises(replay.SceneReplayError, match="Unvalidated MuJoCo"):
+        replay.capture_scene(env, env._get_observations(), identity=identity, initial_state=raw)

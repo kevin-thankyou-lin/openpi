@@ -235,6 +235,7 @@ def test_real_episode_hook_boundaries_preserve_actions_and_settling(tmp_path):
 
         def set_init_state(self, state):
             self.events.append("set_init")
+            self.original_state = state
             return observation()
 
         def step(self, action):
@@ -242,7 +243,8 @@ def test_real_episode_hook_boundaries_preserve_actions_and_settling(tmp_path):
             return observation(), 0, len(self.actions) == 12, {}
 
     class Hooks:
-        def after_set_init_state(self, env, obs):
+        def after_set_init_state(self, env, obs, *, initial_state):
+            assert initial_state is env.original_state
             assert env.events == ["reset", "set_init"]
             assert not env.actions
             self.env = env
@@ -333,3 +335,38 @@ def test_implicit_noncampaign_phase_mode_refused_before_connect():
     exec(compile(ast.Module(body=[function],type_ignores=[]),str(source),"exec"),namespace)
     with pytest.raises(ValueError,match="explicit strider_legacy_input_mode"):
         namespace["eval_speed_baseline"](SimpleNamespace(method="strider",strider_legacy_input_mode=False))
+
+
+@pytest.mark.parametrize("mode", ["capture", "restore"])
+def test_scene_hook_forwards_exact_official_state(tmp_path, monkeypatch, mode):
+    from examples.libero.speed_baselines.scene_replay import SceneIdentity
+
+    original = np.zeros(9)
+    identity = SceneIdentity("libero_10", 5, 31, "a" * 64, "b" * 64, "c" * 64, "d" * 64)
+    scene, observations = {}, {"proprio": np.zeros(9)}
+    calls = []
+
+    def capture(env, obs, *, identity, initial_state):
+        assert initial_state is original
+        assert obs is observations
+        calls.append("capture")
+        return scene
+
+    def restore(env, saved, *, expected_identity, initial_state):
+        assert initial_state is original
+        assert saved is scene
+        calls.append("restore")
+        return observations
+
+    monkeypatch.setattr(cs, "capture_scene", capture)
+    monkeypatch.setattr(cs, "restore_scene", restore)
+    monkeypatch.setattr(cs, "write_scene", lambda *a, **kw: "e" * 64)
+    session = SimpleNamespace(
+        episode=31, scene_mode=mode, scenes={31: scene}, output=tmp_path,
+        scene_identity=lambda ep: identity, record=lambda *a, **kw: None,
+    )
+    result = cs.CampaignSession.after_set_init_state(
+        session, SimpleNamespace(control_timestep=0.05), observations, initial_state=original
+    )
+    assert result is observations
+    assert calls == [mode]

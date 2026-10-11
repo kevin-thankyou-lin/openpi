@@ -254,7 +254,7 @@ def _run_episode(
     env.reset()
     obs = env.set_init_state(initial_state)
     if campaign is not None:
-        obs = campaign.after_set_init_state(env, obs)
+        obs = campaign.after_set_init_state(env, obs, initial_state=initial_state)
     env_steps = 0
     source_actions_consumed = 0
     action_plan: collections.deque = collections.deque()

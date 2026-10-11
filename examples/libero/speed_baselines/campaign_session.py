@@ -314,7 +314,7 @@ class CampaignSession:
     def record(self, kind, **value):
         self.stream.write(json.dumps({"kind": kind, "episode": self.episode, **value}, allow_nan=False) + "\n")
 
-    def after_set_init_state(self, env, obs):
+    def after_set_init_state(self, env, obs, *, initial_state):
         base = env
         while not hasattr(base, "control_timestep"):
             base = base.env
@@ -323,9 +323,9 @@ class CampaignSession:
         identity = self.scene_identity(self.episode)
         if self.scene_mode == "restore":
             scene = self.scenes[self.episode]
-            obs = restore_scene(env, scene, expected_identity=identity)
+            obs = restore_scene(env, scene, expected_identity=identity, initial_state=initial_state)
         else:
-            scene = capture_scene(env, obs, identity=identity)
+            scene = capture_scene(env, obs, identity=identity, initial_state=initial_state)
         path = self.output / "scenes" / f"episode-{self.episode}.json"
         sha = write_scene(path, scene, expected_identity=identity)
         self.record("scene", file=str(path), sha256=sha, identity=dataclasses.asdict(identity), mode=self.scene_mode)
