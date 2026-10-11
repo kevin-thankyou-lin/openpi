@@ -313,6 +313,19 @@ def prepare(
         "authority": AUTHORITY,
         "requires_human_confirmation": True,
         "identity": inventory["identity"],
+        "preprocessing": {
+            "schema": "strider-phase-preprocessing-v1",
+            "image": {
+                "dtype": "uint8",
+                "layout": "HWC",
+                "color": "RGB",
+                "height": 84,
+                "width": 84,
+                "resize": "pillow-bilinear",
+            },
+            "proprio_feature_names": [f"robot0.joint.{i}" for i in range(7)]
+            + [f"robot0.gripper.{i}" for i in range(2)],
+        },
         "classes": [
             {
                 "class_index": i,

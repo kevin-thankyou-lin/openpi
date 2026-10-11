@@ -151,6 +151,18 @@ def test_trainer_artifacts_revisits_train_only_normalization_and_exclusions(pack
     expected = np.load(root / f"task_00_episode_{bank[0]:02d}/proprio.npy").mean(0)
     np.testing.assert_allclose(manifest["normalization"]["proprio_mean"], expected)
     assert manifest["identity"]["suite"] == "libero_spatial"
+    assert manifest["preprocessing"]["image"] == {
+        "dtype": "uint8",
+        "layout": "HWC",
+        "color": "RGB",
+        "height": 84,
+        "width": 84,
+        "resize": "pillow-bilinear",
+    }
+    assert manifest["preprocessing"]["proprio_feature_names"] == [
+        *[f"robot0.joint.{i}" for i in range(7)],
+        *[f"robot0.gripper.{i}" for i in range(2)],
+    ]
     with pytest.raises(FileExistsError):
         build(package)
 
