@@ -11,6 +11,7 @@ from typing import Any
 
 import numpy as np
 
+from .campaign_provenance import VerifiedPolicy, create_verified_policy, read_policy_manifest, verify_controller_identity
 from .campaign_routes import CampaignRoute
 from .campaign_routes import FileAsset
 from .campaign_routes import file_sha256
@@ -49,6 +50,10 @@ class PolicySpec:
     prompt: str
     run_dir: pathlib.Path
     expected_evaluator_commit: str
+    policy_manifest: FileAsset
+    checkpoint_path: pathlib.Path
+    policy_sha256: str
+    controller_sha256: str
     rendered_schedule: FileAsset | None = None
     inference_canary_reference: FileAsset | None = None
 
@@ -56,9 +61,22 @@ class PolicySpec:
         FileAsset(self.path, self.sha256).verify()
         self.route_registry.verify()
         self.route.verify()
+        manifest = read_policy_manifest(self.policy_manifest.path, expected_manifest_sha256=self.policy_manifest.sha256)
+        if manifest["policy_sha256"] != self.policy_sha256:
+            raise ValueError("policy SHA256 differs from manifest content identity")
+        if not self.checkpoint_path.is_dir():
+            raise ValueError("checkpoint must be an explicit local directory")
+        controller_identity(expected_sha256=self.controller_sha256)
         for asset in (self.rendered_schedule, self.inference_canary_reference):
             if asset is not None:
                 asset.verify()
+
+
+def controller_identity(*, expected_sha256=None) -> dict:
+    paths = {name: pathlib.Path(__file__).with_name(name + ".py") for name in ("actions", "controller")}
+    return verify_controller_identity(
+        files={name: {"path": str(path), "sha256": file_sha256(path)} for name, path in paths.items()},
+        actual_files=paths, control_hz=20, chunk_size=10, expected_sha256=expected_sha256)
 
 
 def load_policy_spec(path: pathlib.Path) -> PolicySpec:
@@ -101,8 +119,15 @@ def load_policy_spec(path: pathlib.Path) -> PolicySpec:
         load_candidate_schedule(schedule.path, checkpoint_phases=tuple(
             f"task_{route.identity.task_id:02d}:{phase}" for phase in route.phase_names), fast_stride=3)
     reference = asset(payload["inference_canary_reference"]) if payload.get("inference_canary_reference") else None
-    return PolicySpec(path, file_sha256(path), registry, route, tuple(bank), payload["prompt"],
-                      (path.parent / payload["run_dir"]).resolve(), commit, schedule, reference)
+    spec = PolicySpec(path=path, sha256=file_sha256(path), route_registry=registry, route=route,
+                      ordered_episode_indices=tuple(bank), prompt=payload["prompt"],
+                      run_dir=(path.parent / payload["run_dir"]).resolve(), expected_evaluator_commit=commit,
+                      policy_manifest=asset(payload["policy_manifest"]),
+                      checkpoint_path=(path.parent / payload["checkpoint_path"]).resolve(),
+                      policy_sha256=payload["policy_sha256"], controller_sha256=payload["controller_sha256"],
+                      rendered_schedule=schedule, inference_canary_reference=reference)
+    spec.verify()
+    return spec
 
 
 def expected_metadata(spec: PolicySpec) -> dict:
@@ -123,6 +148,10 @@ def expected_metadata(spec: PolicySpec) -> dict:
             "evaluation_seed": 7,
             "adapter_sha256": file_sha256(pathlib.Path(__file__)),
             "controller_contract": CONTROLLER,
+            "policy_manifest_sha256": spec.policy_manifest.sha256,
+            "checkpoint_path": str(spec.checkpoint_path),
+            "policy_sha256": spec.policy_sha256,
+            "controller_sha256": spec.controller_sha256,
         },
     }
     if spec.route.method == "strider":
@@ -150,8 +179,13 @@ def preflight(spec: PolicySpec, *, repo: pathlib.Path) -> dict:
 
 
 class SeededPolicy:
-    def __init__(self, policy, spec: PolicySpec, *, rng_key=None, rng_data=None):
+    def __init__(self, policy, spec: PolicySpec, *, verified_policy: VerifiedPolicy, rng_key=None, rng_data=None):
         spec.verify()
+        manifest = read_policy_manifest(spec.policy_manifest.path, expected_manifest_sha256=spec.policy_manifest.sha256)
+        expected = VerifiedPolicy(spec.checkpoint_path, spec.policy_sha256, spec.policy_manifest.sha256,
+                                  manifest["file_count"], manifest["total_bytes"])
+        if verified_policy != expected:
+            raise ValueError("loaded policy verification receipt differs from policy spec")
         if not hasattr(policy, "_rng") or getattr(policy, "_is_pytorch_model", True):
             raise ValueError("campaign RNG protocol requires the JAX pi0.5 policy")
         if rng_key is None or rng_data is None:
@@ -357,10 +391,15 @@ def serve(spec: PolicySpec, *, repo: pathlib.Path, port: int) -> None:
     if type(port) is not int or not 0 < port < 65536:
         raise ValueError("invalid server port")
     # These imports may initialize accelerators. Only the explicit serve path uses them.
-    import serve_policy
+    from openpi.policies.policy_config import create_trained_policy
+    from openpi.training.config import get_config
     from openpi.serving.websocket_policy_server import WebsocketPolicyServer
 
-    policy = SeededPolicy(serve_policy.create_default_policy(serve_policy.EnvMode.LIBERO), spec)
+    base_policy, verified = create_verified_policy(
+        spec.policy_manifest.path, expected_manifest_sha256=spec.policy_manifest.sha256,
+        checkpoint_path=spec.checkpoint_path, expected_policy_sha256=spec.policy_sha256,
+        loader=create_trained_policy, train_config=get_config(BASE_POLICY))
+    policy = SeededPolicy(base_policy, spec, verified_policy=verified)
     try:
         WebsocketPolicyServer(policy=policy, host="127.0.0.1", port=port, metadata=policy.metadata).serve_forever()
     finally:

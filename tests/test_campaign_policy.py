@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import dataclasses
 import json
 import pathlib
@@ -12,6 +13,7 @@ import pytest
 
 from examples.libero.speed_baselines import campaign_policy as cp
 from examples.libero.speed_baselines import campaign_routes as cr
+from examples.libero.speed_baselines import campaign_provenance as provenance
 from examples.libero.speed_baselines.strider_client import validate_strider_server_metadata
 from examples.libero.speed_baselines.strider_search_runner import render_libero_schedule
 
@@ -30,11 +32,22 @@ def spec(tmp_path):
     }]}))
     run = tmp_path / "run"
     run.mkdir()
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    weights = checkpoint / "weights.bin"
+    weights.write_bytes(b"test weights")
+    rows = [{"relative_path": "weights.bin", "size_bytes": weights.stat().st_size, "sha256": cr.file_sha256(weights)}]
+    content_sha = hashlib.sha256(json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    manifest = tmp_path / "policy-manifest.json"
+    manifest.write_text(json.dumps({"schema": provenance.POLICY_SCHEMA, "policy": "pi05_libero", "files": rows,
+                                    "file_count": 1, "total_bytes": weights.stat().st_size, "policy_sha256": content_sha}))
     path = tmp_path / "policy-spec.json"
     path.write_text(json.dumps({
         "schema": cp.SCHEMA, "route_registry": _asset(registry), "suite": "libero_spatial", "task_id": 0,
         "arm": "uniform2", "ordered_episode_indices": [7, 1], "policy_seed": 0, "prompt": "pick up the bowl",
         "run_dir": str(run), "expected_evaluator_commit": "a" * 40,
+        "policy_manifest": _asset(manifest), "checkpoint_path": str(checkpoint), "policy_sha256": content_sha,
+        "controller_sha256": cp.controller_identity()["sha256"],
     }))
     return cp.load_policy_spec(path)
 
@@ -59,7 +72,10 @@ class FakePolicy:
 
 
 def _seeded(spec, fake=None):
-    return cp.SeededPolicy(fake or FakePolicy(), spec,
+    verified = provenance.verify_policy_manifest(spec.policy_manifest.path,
+        expected_manifest_sha256=spec.policy_manifest.sha256, checkpoint_path=spec.checkpoint_path,
+        expected_policy_sha256=spec.policy_sha256)
+    return cp.SeededPolicy(fake or FakePolicy(), spec, verified_policy=verified,
                            rng_key=lambda seed: np.array([seed, 0], dtype=np.uint32), rng_data=lambda rng: rng)
 
 
@@ -272,20 +288,20 @@ def test_wrap_episode_hook_checks_bank_and_existing_wrapper(spec):
         cp.wrap_episode_policy(wrapped, spec, 7)
 
 
-def test_serve_uses_same_default_pi05_factory_with_mock_server_only(spec, monkeypatch):
+def test_serve_uses_verified_exact_checkpoint_and_pi05_config_with_mock_server_only(spec, monkeypatch):
     events = []
     monkeypatch.setattr(cp.subprocess, "check_output", lambda *a, **kw: "a" * 40)
-    fake_serve = types.ModuleType("serve_policy")
-    fake_serve.EnvMode = types.SimpleNamespace(LIBERO="same-default-libero")
-
-    def factory(mode):
-        events.append(("create_default_policy", mode))
-        return FakePolicy()
-
-    fake_serve.create_default_policy = factory
-    monkeypatch.setitem(sys.modules, "serve_policy", fake_serve)
-    for name in ["openpi", "openpi.serving"]:
+    for name in ["openpi", "openpi.serving", "openpi.policies", "openpi.training"]:
         monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    config = types.ModuleType("openpi.training.config")
+    config.get_config = lambda name: types.SimpleNamespace(name=name)
+    factory = types.ModuleType("openpi.policies.policy_config")
+    def loader(train_config, checkpoint):
+        events.append(("create_trained_policy", train_config.name, checkpoint))
+        return FakePolicy()
+    factory.create_trained_policy = loader
+    monkeypatch.setitem(sys.modules, config.__name__, config)
+    monkeypatch.setitem(sys.modules, factory.__name__, factory)
     fake_server = types.ModuleType("openpi.serving.websocket_policy_server")
 
     class Server:
@@ -300,10 +316,10 @@ def test_serve_uses_same_default_pi05_factory_with_mock_server_only(spec, monkey
     fake_server.WebsocketPolicyServer = Server
     monkeypatch.setitem(sys.modules, fake_server.__name__, fake_server)
     real_class = cp.SeededPolicy
-    monkeypatch.setattr(cp, "SeededPolicy", lambda policy, s: real_class(
-        policy, s, rng_key=lambda seed: np.array([seed, 0], dtype=np.uint32), rng_data=lambda rng: rng))
+    monkeypatch.setattr(cp, "SeededPolicy", lambda policy, s, **kw: real_class(
+        policy, s, **kw, rng_key=lambda seed: np.array([seed, 0], dtype=np.uint32), rng_data=lambda rng: rng))
     cp.serve(spec, repo=spec.path.parent, port=8013)
-    assert events == [("create_default_policy", "same-default-libero"), ("construct", "127.0.0.1", 8013),
+    assert events == [("create_trained_policy", "pi05_libero", spec.checkpoint_path), ("construct", "127.0.0.1", 8013),
                       "mock-serve-only"]
 
 
@@ -344,3 +360,33 @@ runpy.run_path(sys.argv[0], run_name='__main__')
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["inference_calls"] == 0
     assert not (spec.run_dir / "inference-rng.jsonl").exists()
+
+
+@pytest.mark.parametrize("field", ["policy_sha256", "controller_sha256"])
+def test_fabricated_content_pin_rejected_at_load(spec, field):
+    payload = json.loads(spec.path.read_text())
+    payload[field] = "0" * 64
+    spec.path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError):
+        cp.load_policy_spec(spec.path)
+
+
+def test_different_verified_checkpoint_rejected_before_canary(spec):
+    verified = provenance.VerifiedPolicy(spec.path.parent / "other", spec.policy_sha256,
+                                         spec.policy_manifest.sha256, 1, 12)
+    fake = FakePolicy()
+    with pytest.raises(ValueError, match="verification receipt"):
+        cp.SeededPolicy(fake, spec, verified_policy=verified)
+    assert not fake.requests
+
+
+def test_load_is_lightweight_but_model_load_rejects_changed_weights(spec):
+    (spec.checkpoint_path / "weights.bin").write_bytes(b"evil weights")
+    cp.load_policy_spec(spec.path)  # No weight hashing during structural preflight.
+    calls = []
+    with pytest.raises(ValueError, match="bytes differ"):
+        provenance.create_verified_policy(spec.policy_manifest.path,
+            expected_manifest_sha256=spec.policy_manifest.sha256, checkpoint_path=spec.checkpoint_path,
+            expected_policy_sha256=spec.policy_sha256, train_config=types.SimpleNamespace(name="pi05_libero"),
+            loader=lambda *args: calls.append(args))
+    assert not calls
