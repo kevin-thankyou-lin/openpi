@@ -15,6 +15,8 @@ import imageio.v2 as imageio
 import numpy as np
 from PIL import Image
 
+from .phase_capture_admission import validate_admission
+
 SUITES = ("libero_10", "libero_spatial", "libero_object", "libero_goal")
 AUTHORITY = "AI_CANDIDATE_NOT_HUMAN_ANNOTATION"
 
@@ -76,6 +78,7 @@ def validate_units(inventory: dict, base: Path) -> list[dict]:
     seen = set()
     output = []
     common_pins = None
+    admission = validate_admission(inventory, base)
     for unit in inventory["units"]:
         _, receipt = asset(base, unit["session"])
         _, policy = asset(base, unit["policy"])
@@ -107,7 +110,7 @@ def validate_units(inventory: dict, base: Path) -> list[dict]:
             raise ValueError("missing source/initial-state provenance")
         if any(policy[key] != pins[key] for key in ("policy_sha256", "controller_sha256")):
             raise ValueError("policy/controller content identity mismatch")
-        if common_pins is not None and pins != common_pins:
+        if common_pins is not None and pins != common_pins and admission is None:
             raise ValueError("mixed source contracts")
         common_pins = pins
         episodes = {e["episode_index"]: e for e in results["episodes"]}
@@ -342,6 +345,10 @@ def prepare(
         "split_strategy": {"name": "fixed_fit_bank_before_outcomes", "seed": split_seed, "episode_assignments": splits},
         "provenance": {
             "inventory_sha256": sha(inventory_path),
+            "legacy_capture_admission": inventory.get("legacy_capture_admission"),
+            "admission_validator_sha256": sha(Path(__file__).with_name("phase_capture_admission.py"))
+            if inventory.get("legacy_capture_admission")
+            else None,
             "annotations_sha256": sha(annotations_path),
             "ontology_sha256": sha(ontology_path),
             "generator_sha256": sha(Path(__file__)),
