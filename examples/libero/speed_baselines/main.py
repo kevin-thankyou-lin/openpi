@@ -76,6 +76,7 @@ class Args:
     strider_schedule: Optional[pathlib.Path] = None
     strider_device: str = "cuda"
     strider_legacy_input_mode: bool = False
+    strider_source50_selected: bool = False
     resume: bool = False
     save_strider_telemetry: bool = False
 
@@ -139,8 +140,13 @@ def eval_speed_baseline(args: Args, *, campaign=None) -> None:
     policy = websocket_client_policy.WebsocketClientPolicy(args.host, args.port, ping_interval=None)
     policy_metadata = policy.get_server_metadata()
     selector = SupSelectorClient(args.selector_host, args.selector_port) if args.method == "sup" else None
+    phase_selector_class = StriderPhaseSelector
+    if args.strider_source50_selected:
+        from .source50_selector import selector_class
+
+        phase_selector_class = selector_class(StriderPhaseSelector)
     strider = (
-        StriderPhaseSelector(
+        phase_selector_class(
             checkpoint=args.strider_checkpoint,
             phase_repo=args.strider_phase_repo,
             schedule=args.strider_schedule,
@@ -167,6 +173,10 @@ def eval_speed_baseline(args: Args, *, campaign=None) -> None:
         campaign.connect(policy_metadata)
         if strider is not None:
             campaign.write_phase_input_proof(strider.phase_input_proof)
+            if args.strider_source50_selected:
+                from .campaign_session import write_new
+
+                write_new(campaign.output / "source50-adapter-proof.json", strider.source50_adapter_proof)
 
     task_suite = benchmark.get_benchmark_dict()[args.task_suite_name]()
     videos_dir = args.run_dir / "videos"

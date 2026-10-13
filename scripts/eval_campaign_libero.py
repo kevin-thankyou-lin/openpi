@@ -46,6 +46,7 @@ def main():
             strider_schedule=session.policy_spec.rendered_schedule.path,
             strider_phase_repo=opts.phase_repo,
             fast_stride=3,
+            strider_source50_selected=True,
         )
     else:
         kwargs["uniform_stride"] = route.uniform_stride
