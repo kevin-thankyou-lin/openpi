@@ -86,6 +86,11 @@ def audit_episode(rows, result, *, route, composer, expected_reference=None, exp
                     indices == list(range(cursor, min(cursor + route.uniform_stride, len(raw)))),
                     "incorrect uniform stride",
                 )
+            elif route.method == "sup":
+                selected = plan["decision"]["selected_k"]
+                require(type(selected) is int and selected in (1, 2), "invalid learned SuP stride")
+                require(indices == list(range(cursor, min(cursor + selected, len(raw)))),
+                        "SuP executed group differs from learned selection")
             else:
                 speeds = plan["decision"]["speed_factors"]
                 require(len(speeds) == 10 and all(v in (1, 2, 3) for v in speeds), "unregistered STRIDER speeds")
@@ -100,7 +105,7 @@ def audit_episode(rows, result, *, route, composer, expected_reference=None, exp
             total_source += len(indices)
         require(index == len(plans) - 1 or cursor == 10, "new inference discarded a raw suffix")
     require(total_source == result["source_actions_consumed"], "source action total mismatch")
-    if route.method == "uniform":
+    if route.method in ("uniform", "sup"):
         require(not result.get("phase_decisions"), "uniform run executed a phase selector")
     else:
         require(len(result["phase_decisions"]) == len(steps), "STRIDER phase trace incomplete")
@@ -125,6 +130,11 @@ def audit_episode(rows, result, *, route, composer, expected_reference=None, exp
 
 
 def audit_run(session, *, composer):
+    if session.policy_spec.route.method == "sup":
+        from .sup_identity import validate_selector_metadata
+
+        validate_selector_metadata(json.loads((session.run_dir / "sup-selector-handshake.json").read_text()),
+                                   session.policy_spec.route)
     if session.policy_spec.route.method == "strider":
         proof = json.loads((session.output / "phase-input-proof.json").read_text())
         session.policy_spec.route.verify_phase_input_proof(proof)

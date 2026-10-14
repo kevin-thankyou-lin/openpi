@@ -155,8 +155,13 @@ class CampaignSession:
             raise ValueError("ledger/scene policy or controller identity differs from verified policy spec")
         if self.spec["purpose"] not in (*CHALLENGER_PURPOSES, "baseline"):
             raise ValueError("explicit rollout purpose required")
-        if self.spec["purpose"] == "baseline" and self.policy_spec.route.method != "uniform":
+        if self.spec["purpose"] == "baseline" and self.policy_spec.route.method not in ("uniform", "sup"):
             raise ValueError("a learned/gated challenger cannot be exempted as a baseline")
+        if self.policy_spec.route.method == "sup" and (
+            self.spec["purpose"] != "baseline" or self.spec.get("selection_closed") is not True
+            or self.bank != tuple(range(40, 50)) or self.spec["scene_mode"] != "restore"
+        ):
+            raise ValueError("SuP comparator requires closed selection, restored scenes and frozen40..49 bank")
         if type(self.spec["baseline_cap"]) is not int or self.spec["baseline_cap"] < 0:
             raise ValueError("explicit baseline allocation required")
         if self.spec["challenger_cap"] != 20 or type(self.spec["challenger_cap"]) is not int:
@@ -185,6 +190,10 @@ class CampaignSession:
             "eval_entrypoint": self.repo / "scripts/eval_campaign_libero.py",
             "server_entrypoint": self.repo / "scripts/serve_campaign_libero.py",
         }
+        if self.policy_spec.route.method == "sup":
+            expected_files.update(selector_client=Path(__file__).with_name("selector_client.py"),
+                                  sup_identity=Path(__file__).with_name("sup_identity.py"),
+                                  selector_service=self.repo / "scripts/serve_sup_selector.py")
         if self.policy_spec.route.method == "strider":
             expected_files["phase_preprocessing"] = Path(__file__).with_name("phase_preprocessing.py")
         if not expected_files.keys() <= self.sources.keys():
@@ -248,6 +257,8 @@ class CampaignSession:
             or args.run_dir.resolve() != self.run_dir
         ):
             raise ValueError("evaluator arguments differ from frozen campaign contract")
+        if route.method == "sup" and args.fast_stride != 2:
+            raise ValueError("SuP comparator requires paper stride set1/2")
         if route.method == "uniform" and args.uniform_stride != route.uniform_stride:
             raise ValueError("uniform stride differs from registered arm")
         if route.method == "strider" and (
