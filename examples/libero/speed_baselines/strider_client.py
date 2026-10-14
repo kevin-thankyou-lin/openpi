@@ -12,6 +12,8 @@ from typing import Any
 
 import numpy as np
 
+from .acquisition_window import ClosePreviewSchedule
+from .acquisition_window import validate_window
 from .actions import ActionSlice
 from .actions import SupActionComposer
 from .phase_preprocessing import PREPROCESSING
@@ -99,6 +101,12 @@ def load_candidate_schedule(
         if key in speeds:
             raise ValueError(f"duplicate Strider candidate phase {key}")
         speeds[key] = speed
+    window = validate_window(payload.get("acquisition_window"))
+    if window is not None:
+        if not any(key.endswith(":acquire") and value == 1 for key, value in speeds.items()):
+            raise ValueError("acquisition window requires acquire speed 1")
+        if fast_stride < 2:
+            raise ValueError("acquisition window requires fast_stride >= 2")
     expected = set(checkpoint_phases)
     if set(speeds) != expected:
         missing = sorted(expected - set(speeds))
@@ -269,13 +277,14 @@ class StriderPhaseSelector:
                 LiberoActionComposer(), allowed_speeds=tuple(sorted(STRIDER_ALLOWED_SPEEDS))
             )
         )
+        speed_schedule = strider.SubtaskSpeedSchedule(
+            phase_speeds, fallback_speed=1.0, minimum_confidence=0.0,
+        )
+        window = validate_window(schedule_payload.get("acquisition_window"))
+        self.acquisition_window = ClosePreviewSchedule(speed_schedule, window) if window is not None else None
         self.runtime = strider.StriderRuntime(
             predictor=self.predictor,
-            schedule=strider.SubtaskSpeedSchedule(
-                phase_speeds,
-                fallback_speed=1.0,
-                minimum_confidence=0.0,
-            ),
+            schedule=self.acquisition_window or speed_schedule,
             pipeline=strider.PlanPipeline(retimer=retimer),
         )
 
@@ -292,6 +301,8 @@ class StriderPhaseSelector:
     def plan(self, actions: np.ndarray, *, task_id: int) -> tuple[list[ActionSlice], dict[str, Any]]:
         if task_id != self.task_id:
             raise ValueError(f"horizon evaluator expected task {self.task_id}, received task {task_id}")
+        if self.acquisition_window is not None:
+            self.acquisition_window.actions = np.asarray(actions, dtype=np.float64)
         result = self.runtime.plan(
             self._observations,
             tuple(np.asarray(action, dtype=np.float64) for action in actions),
@@ -338,4 +349,6 @@ class StriderPhaseSelector:
             "coverage_steps": result.coverage_steps,
             "schedule_source": result.metadata["schedule_source"],
             "pipeline_stages": list(result.transformed.receipt.stage_order),
+            **({"acquisition_window": result.metadata["acquisition_window"]}
+               if "acquisition_window" in result.metadata else {}),
         }

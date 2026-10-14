@@ -144,6 +144,7 @@ class CampaignSession:
             "provenance": Path(__file__).with_name("campaign_provenance.py"),
             "audit": Path(__file__).with_name("campaign_audit.py"),
             "strider_client": Path(__file__).with_name("strider_client.py"),
+            "acquisition_window": Path(__file__).with_name("acquisition_window.py"),
             "telemetry": Path(__file__).with_name("telemetry.py"),
             "eval_entrypoint": self.repo / "scripts/eval_campaign_libero.py",
             "server_entrypoint": self.repo / "scripts/serve_campaign_libero.py",

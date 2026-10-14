@@ -100,3 +100,27 @@ def test_rejects_corrupt_or_nonmatching_rollouts(evidence, fault):
         rows[-1].update(success=False, state={"goal_satisfied": False, "goal_predicates": {"on bowl plate": False}})
     with pytest.raises(ValueError, match="mismatch|skip|reuse|selector|differs|early"):
         audit_episode(rows, result, route=route, composer=composer, expected_reference=ref)
+
+
+@pytest.mark.parametrize('fault', [None, 'missing_gate', 'wrong_mask', 'wrong_speeds'])
+def test_close_preview_is_reconstructed_from_raw_policy_actions(evidence, fault):
+    rows, result, route, composer = copy.deepcopy(evidence)
+    route.method = 'strider'
+    raw = np.asarray(rows[2]['receipt']['raw_actions']); raw[:, -1] = -1
+    rows[2]['receipt'].update(raw_actions=raw.tolist(), actions_sha256=array_hash(raw))
+    for i, group in enumerate(uniform_slices(raw, stride=2, composer=composer)[:2]):
+        rows[3 + i]['action'] = group.action.tolist()
+    config = {'kind': 'close_preview_v1', 'lead_source_steps': 4}
+    decision = rows[2]['decision']
+    decision.update(predicted_phases=['task_00:acquire'] * 10, fallback_indices=[], speed_factors=[2] * 10,
+                    acquisition_window={'config': config, 'base_speed_factors': [1] * 10, 'close_within_lead': [False] * 10})
+    result['phase_decisions'] = [{}, {}]
+    schedule = {'phase_schedule': [['task_00:acquire', 1]], 'acquisition_window': config}
+    if fault == 'missing_gate': decision.pop('acquisition_window')
+    if fault == 'wrong_mask': decision['acquisition_window']['close_within_lead'][0] = True
+    if fault == 'wrong_speeds': decision['speed_factors'][0] = 1
+    if fault:
+        with pytest.raises(ValueError, match='window'):
+            audit_episode(rows, result, route=route, composer=composer, expected_schedule=schedule)
+    else:
+        assert audit_episode(rows, result, route=route, composer=composer, expected_schedule=schedule)['passed']

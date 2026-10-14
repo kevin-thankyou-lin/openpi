@@ -105,6 +105,7 @@ def session_spec(tmp_path, monkeypatch):
                 "provenance": "campaign_provenance.py",
                 "audit": "campaign_audit.py",
                 "strider_client": "strider_client.py",
+                "acquisition_window": "acquisition_window.py",
                 "telemetry": "telemetry.py",
                 "eval_entrypoint": "../../../scripts/eval_campaign_libero.py",
                 "server_entrypoint": "../../../scripts/serve_campaign_libero.py",

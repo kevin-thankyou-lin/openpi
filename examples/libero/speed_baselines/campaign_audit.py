@@ -11,7 +11,7 @@ from .campaign_policy import array_hash
 from .campaign_routes import SUITE_HORIZONS
 
 
-def audit_episode(rows, result, *, route, composer, expected_reference=None):
+def audit_episode(rows, result, *, route, composer, expected_reference=None, expected_schedule=None):
     def require(value, message):
         if not value:
             raise ValueError(message)
@@ -56,6 +56,23 @@ def audit_episode(rows, result, *, route, composer, expected_reference=None):
         raw = np.asarray(receipt["raw_actions"], dtype=receipt["actions_dtype"])
         require(raw.shape == (10, 7) and np.isfinite(raw).all(), "invalid raw policy actions")
         require(array_hash(raw) == receipt["actions_sha256"], "raw action receipt corruption")
+        if route.method == "strider" and expected_schedule is not None:
+            config = expected_schedule.get("acquisition_window")
+            recorded = plan["decision"].get("acquisition_window")
+            if config is None:
+                require(recorded is None, "unexpected acquisition window")
+            else:
+                from .acquisition_window import window_speeds
+                require(recorded is not None and recorded["config"] == config, "missing or altered acquisition window")
+                table = dict(expected_schedule["phase_schedule"])
+                labels = plan["decision"]["predicted_phases"]
+                fallback = plan["decision"]["fallback_indices"]
+                base = tuple(1.0 if i in fallback else table[label] for i, label in enumerate(labels))
+                bare = [None if label is None else label.split(":", 1)[1] for label in labels]
+                expected, near = window_speeds(raw, bare, base, fallback, config)
+                require(list(base) == recorded["base_speed_factors"], "window base schedule differs")
+                require(list(near) == recorded["close_within_lead"], "window close preview differs")
+                require(list(expected) == plan["decision"]["speed_factors"], "window speed mask differs")
         cursor = 0
         require(index in by_plan, "unused recorded policy plan")
         for step in by_plan[index]:
@@ -128,6 +145,8 @@ def audit_run(session, *, composer):
                 route=session.policy_spec.route,
                 composer=composer,
                 expected_reference=references.get(str(ep)),
+                expected_schedule=(json.loads(session.policy_spec.rendered_schedule.path.read_text())
+                                   if session.policy_spec.rendered_schedule is not None else None),
             )
         )
     return {
