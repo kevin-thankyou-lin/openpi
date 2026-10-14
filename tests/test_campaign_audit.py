@@ -100,3 +100,29 @@ def test_rejects_corrupt_or_nonmatching_rollouts(evidence, fault):
         rows[-1].update(success=False, state={"goal_satisfied": False, "goal_predicates": {"on bowl plate": False}})
     with pytest.raises(ValueError, match="mismatch|skip|reuse|selector|differs|early"):
         audit_episode(rows, result, route=route, composer=composer, expected_reference=ref)
+
+
+def test_refresh_audit_reconstructs_changed_suffix_and_rejects_wrong_offset(evidence):
+    rows,result,route,composer=copy.deepcopy(evidence)
+    route.method='strider'
+    raw=np.asarray(rows[2]['receipt']['raw_actions'])
+    rows=rows[:3]
+    rows[2]['env_step']=0
+    rows[2]['decision']['speed_factors']=[1]*10
+    refresh={'env_step':5,'policy_decision_index':0,
+             'decision':{'source_offset':5,'speed_factors':[2]*5}}
+    groups=[[i] for i in range(5)]+[[5,6],[7,8],[9]]
+    for t,idx in enumerate(groups):
+        if t==5:rows.append({'kind':'predictor_refresh','episode':7,**refresh})
+        group=raw[idx]
+        action=group[0] if len(idx)==1 else composer.merge(group)
+        rows.append({'kind':'step','episode':7,'env_step':t,'decision_index':0,
+                     'source_indices':idx,'source_stride':len(idx),'action':action.tolist()})
+    rows.append({'kind':'terminal','episode':7,'env_steps':8,'success':True,
+                 'loop_wall_seconds':1.5,'state':{'goal_satisfied':True,'goal_predicates':{'goal':True}}})
+    result.update(env_steps=8,source_actions_consumed=10,phase_decisions=[{}]*8,
+                  predictor_refreshes=[refresh],predictor_call_count=2,strider_min_prediction_hz=4)
+    assert audit_episode(rows,result,route=route,composer=composer)['passed']
+    refresh['decision']['source_offset']=4
+    with pytest.raises(ValueError,match='offset mismatch'):
+        audit_episode(rows,result,route=route,composer=composer)

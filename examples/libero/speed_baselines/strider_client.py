@@ -269,14 +269,13 @@ class StriderPhaseSelector:
                 LiberoActionComposer(), allowed_speeds=tuple(sorted(STRIDER_ALLOWED_SPEEDS))
             )
         )
+        self._runtime_schedule = strider.SubtaskSpeedSchedule(
+            phase_speeds, fallback_speed=1.0, minimum_confidence=0.0)
+        self._runtime_pipeline = strider.PlanPipeline(retimer=retimer)
         self.runtime = strider.StriderRuntime(
             predictor=self.predictor,
-            schedule=strider.SubtaskSpeedSchedule(
-                phase_speeds,
-                fallback_speed=1.0,
-                minimum_confidence=0.0,
-            ),
-            pipeline=strider.PlanPipeline(retimer=retimer),
+            schedule=self._runtime_schedule,
+            pipeline=self._runtime_pipeline,
         )
 
     def reset_episode(self) -> None:
@@ -290,9 +289,22 @@ class StriderPhaseSelector:
         self._observations = self._observations[-int(self.predictor.history_length) :]
 
     def plan(self, actions: np.ndarray, *, task_id: int) -> tuple[list[ActionSlice], dict[str, Any]]:
+        return self._plan(actions, task_id=task_id, runtime=self.runtime)
+
+    def plan_suffix(self, actions: np.ndarray, *, task_id: int, source_offset: int):
+        import strider
+        from .predictor_refresh import PrefixPredictor
+        if source_offset <= 0 or source_offset + len(actions) != self.predictor.horizon:
+            raise ValueError("suffix must exactly cover unconsumed native actions")
+        runtime = strider.StriderRuntime(
+            predictor=PrefixPredictor(self.predictor, len(actions)),
+            schedule=self._runtime_schedule, pipeline=self._runtime_pipeline)
+        return self._plan(actions, task_id=task_id, runtime=runtime, source_offset=source_offset)
+
+    def _plan(self, actions, *, task_id, runtime, source_offset=0):
         if task_id != self.task_id:
             raise ValueError(f"horizon evaluator expected task {self.task_id}, received task {task_id}")
-        result = self.runtime.plan(
+        result = runtime.plan(
             self._observations,
             tuple(np.asarray(action, dtype=np.float64) for action in actions),
             metadata={
@@ -314,7 +326,7 @@ class StriderPhaseSelector:
             scheduled.append(
                 ActionSlice(
                     action=np.asarray(action, dtype=np.float64),
-                    source_indices=indices,
+                    source_indices=tuple(index + source_offset for index in indices),
                     metadata={
                         "requested_stride": provenance["requested_speed"],
                         "actual_stride": provenance["actual_stride"],
@@ -327,6 +339,7 @@ class StriderPhaseSelector:
                 )
             )
         return scheduled, {
+            "source_offset": source_offset,
             "selected_k": None,
             "slice_strides": [item.stride for item in scheduled],
             "predicted_phases": list(phases),

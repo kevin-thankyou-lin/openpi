@@ -25,6 +25,22 @@ def audit_episode(rows, result, *, route, composer, expected_reference=None):
     require(len(initial) == len(terminal) == len(scenes) == 1, "missing or duplicate boundary evidence")
     steps = [r for r in rows if r["kind"] == "step"]
     plans = [r for r in rows if r["kind"] == "plan"]
+    refreshes = [r for r in rows if r["kind"] == "predictor_refresh"]
+    refresh_by_tick = {r["env_step"]: r for r in refreshes}
+    require(len(refresh_by_tick) == len(refreshes), "duplicate predictor refresh")
+    recorded_refreshes = [{k: r[k] for k in ("env_step", "policy_decision_index", "decision")} for r in refreshes]
+    require(recorded_refreshes == result.get("predictor_refreshes", []), "predictor refresh evidence mismatch")
+    if route.method == "strider" and "predictor_call_count" in result:
+        from .predictor_refresh import refresh_interval
+        interval = refresh_interval(result["strider_min_prediction_hz"])
+        require(result["predictor_call_count"] == len(plans) + len(refreshes), "predictor count mismatch")
+        if interval is None:
+            require(not refreshes, "refresh occurred with refresh disabled")
+        else:
+            ticks = sorted([p["env_step"] for p in plans] + list(refresh_by_tick))
+            require(len(ticks) == len(set(ticks)), "duplicate prediction at policy replan")
+            require(all(b-a <= interval for a,b in zip(ticks, ticks[1:] + [result["env_steps"]])),
+                    "minimum predictor cadence violated")
     require([s["env_step"] for s in steps] == list(range(result["env_steps"])), "control tick trace incomplete")
     require(terminal[0]["env_steps"] == result["env_steps"], "terminal tick mismatch")
     require(type(result["success"]) is bool and terminal[0]["success"] == result["success"], "success mismatch")
@@ -57,8 +73,16 @@ def audit_episode(rows, result, *, route, composer, expected_reference=None):
         require(raw.shape == (10, 7) and np.isfinite(raw).all(), "invalid raw policy actions")
         require(array_hash(raw) == receipt["actions_sha256"], "raw action receipt corruption")
         cursor = 0
+        active_decision = plan["decision"]
+        source_offset = 0
         require(index in by_plan, "unused recorded policy plan")
         for step in by_plan[index]:
+            if step["env_step"] in refresh_by_tick:
+                refresh = refresh_by_tick[step["env_step"]]
+                require(refresh["policy_decision_index"] == index, "refresh belongs to another policy chunk")
+                active_decision = refresh["decision"]
+                source_offset = active_decision["source_offset"]
+                require(source_offset == cursor and cursor > 0, "refresh suffix offset mismatch")
             indices = step["source_indices"]
             require(
                 indices == list(range(cursor, cursor + len(indices))) and bool(indices), "source action skip or reuse"
@@ -70,10 +94,11 @@ def audit_episode(rows, result, *, route, composer, expected_reference=None):
                     "incorrect uniform stride",
                 )
             else:
-                speeds = plan["decision"]["speed_factors"]
-                require(len(speeds) == 10 and all(v in (1, 2, 3) for v in speeds), "unregistered STRIDER speeds")
-                stop = min(cursor + int(speeds[cursor]), len(raw))
-                if not all(v == speeds[cursor] for v in speeds[cursor:stop]):
+                speeds = active_decision["speed_factors"]
+                require(len(speeds) == 10-source_offset and all(v in (1, 2, 3) for v in speeds), "unregistered STRIDER speeds")
+                local_cursor = cursor-source_offset
+                stop = min(cursor + int(speeds[local_cursor]), len(raw))
+                if not all(v == speeds[local_cursor] for v in speeds[local_cursor:stop-source_offset]):
                     stop = cursor + 1
                 require(indices == list(range(cursor, stop)), "STRIDER group differs from phase schedule")
             group = raw[indices].astype(np.float64)

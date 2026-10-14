@@ -150,6 +150,8 @@ class CampaignSession:
         }
         if self.policy_spec.route.method == "strider":
             expected_files["phase_preprocessing"] = Path(__file__).with_name("phase_preprocessing.py")
+        if self.spec.get("strider_min_prediction_hz", 0):
+            expected_files["predictor_refresh"] = Path(__file__).with_name("predictor_refresh.py")
         if not expected_files.keys() <= self.sources.keys():
             raise ValueError("missing executable source pins")
         if any(self.sources[key].path != path.resolve() for key, path in expected_files.items()):
@@ -196,6 +198,8 @@ class CampaignSession:
         )
 
     def validate_args(self, args):
+        if getattr(args, "strider_min_prediction_hz", 0.0) != self.spec.get("strider_min_prediction_hz", 0.0):
+            raise ValueError("predictor cadence differs from registered experiment")
         route = self.policy_spec.route
         if (
             args.task_suite_name != self.identity.suite

@@ -47,6 +47,7 @@ def main():
             strider_phase_repo=opts.phase_repo,
             fast_stride=3,
             strider_source50_selected=True,
+            strider_min_prediction_hz=session.spec.get("strider_min_prediction_hz", 0.0),
         )
     else:
         kwargs["uniform_stride"] = route.uniform_stride

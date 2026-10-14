@@ -30,6 +30,7 @@ from .controller import apply_sup_controller_patches
 from .result_utils import atomic_write_json
 from .result_utils import summarize_episodes
 from .result_utils import summarize_tasks
+from .predictor_refresh import RefreshableActionQueue, refresh_interval
 from .selector_client import SupSelectorClient
 from .strider_client import STRIDER_AUTHORITY
 from .strider_client import StriderPhaseSelector
@@ -77,6 +78,7 @@ class Args:
     strider_device: str = "cuda"
     strider_legacy_input_mode: bool = False
     strider_source50_selected: bool = False
+    strider_min_prediction_hz: float = 0.0
     resume: bool = False
     save_strider_telemetry: bool = False
 
@@ -268,9 +270,11 @@ def _run_episode(
     env_steps = 0
     source_actions_consumed = 0
     action_plan: collections.deque = collections.deque()
+    refresh_queue = RefreshableActionQueue(args.strider_min_prediction_hz) if strider is not None else None
     decision_index = 0
     decisions: list[dict] = []
     phase_decisions: list[dict] = []
+    predictor_refreshes: list[dict] = []
     frames: list[np.ndarray] = []
     telemetry_records: list[dict] = []
     done = False
@@ -295,6 +299,16 @@ def _run_episode(
         )
         if strider is not None:
             strider.observe(image, obs)
+            if refresh_queue:
+                refresh = refresh_queue.refresh(strider, task_id=task_id, env_step=env_steps)
+                if refresh is not None:
+                    record = {"env_step": env_steps, "policy_decision_index": decision["decision_index"],
+                              "decision": refresh}
+                    predictor_refreshes.append(record)
+                    if campaign is not None:
+                        campaign.record("predictor_refresh", **record)
+        if refresh_queue is not None:
+            action_plan = refresh_queue
         if not action_plan:
             state = np.concatenate(
                 [obs["robot0_eef_pos"], _quat2axisangle(obs["robot0_eef_quat"]), obs["robot0_gripper_qpos"]]
@@ -312,8 +326,7 @@ def _run_episode(
                 slices, decision = _schedule_actions(actions, response, state, args, composer, selector)
                 action_plan.extend(slices)
             else:
-                slices, decision = strider.plan(actions, task_id=task_id)
-                action_plan.extend(slices)
+                decision = refresh_queue.start(actions, strider, task_id=task_id, env_step=env_steps)
             decision["decision_index"] = decision_index
             decision["env_step"] = env_steps
             decisions.append(decision)
@@ -379,6 +392,9 @@ def _run_episode(
     if telemetry_path is not None:
         result["strider_telemetry"] = str(telemetry_path)
     if strider is not None:
+        result["predictor_refreshes"] = predictor_refreshes
+        result["strider_min_prediction_hz"] = args.strider_min_prediction_hz
+        result["predictor_call_count"] = len(decisions) + len(predictor_refreshes)
         result["phase_decision_count"] = len(phase_decisions)
         result["phase_decisions"] = phase_decisions
     return result
@@ -487,6 +503,9 @@ def _quat2axisangle(quat: np.ndarray) -> np.ndarray:
 
 
 def _validate_args(args: Args) -> None:
+    refresh_interval(args.strider_min_prediction_hz)
+    if args.strider_min_prediction_hz and args.method != "strider":
+        raise ValueError("predictor refresh requires STRIDER")
     if args.task_suite_name not in MAX_STEPS:
         raise ValueError(f"unsupported task suite: {args.task_suite_name}")
     if args.chunk_size < 1:
