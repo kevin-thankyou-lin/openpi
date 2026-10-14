@@ -48,6 +48,22 @@ def test_matched_sup_session_admitted_and_policy_preserves_base(sup_session):
     assert metadata['campaign']['policy_seed']==0 and metadata['campaign']['controller_contract']==cp.CONTROLLER
     assert not (sup_session.parent/'budget.jsonl').exists()
 
+@pytest.mark.parametrize('bank',[list(range(30,40)),list(range(40,50))])
+def test_sup_admits_registered_ten_scene_bank(sup_session,bank):
+    spec=json.loads(sup_session.read_text())
+    path=Path(spec['policy_spec']['path']);policy=json.loads(path.read_text())
+    policy['ordered_episode_indices']=bank;path.write_text(json.dumps(policy))
+    spec['policy_spec']=asset(path)
+    spec['initial_states']={str(ep):{'sha256':cp.array_hash(np.array([ep],dtype=float)),'dtype':'float64','shape':[1]} for ep in bank}
+    scene=next(iter(spec['scenes'].values()))
+    spec['scenes']={str(ep):scene for ep in bank}
+    spec['reference_initials']={str(ep):{} for ep in bank}
+    sup_session.write_text(json.dumps(spec))
+    session=cs.CampaignSession(sup_session,repo=Path(cs.__file__).parents[3])
+    assert session.bank==tuple(bank)
+    assert cp.expected_metadata(session.policy_spec)['campaign']['policy_seed']==0
+    assert not (sup_session.parent/'budget.jsonl').exists()
+
 @pytest.mark.parametrize('fault',['selection_open','capture','wrong_bank','challenger_purpose','missing_service_pin','wrong_epsilon'])
 def test_sup_refuses_unmatched_or_unfrozen_session(sup_session,fault):
     spec=json.loads(sup_session.read_text())
@@ -56,7 +72,7 @@ def test_sup_refuses_unmatched_or_unfrozen_session(sup_session,fault):
     elif fault=='challenger_purpose':spec['purpose']='candidate_validation'
     elif fault=='missing_service_pin':del spec['implementation_sources']['selector_service']
     elif fault=='wrong_bank':
-        pp=Path(spec['policy_spec']['path']);p=json.loads(pp.read_text());p['ordered_episode_indices']=list(range(30,40));pp.write_text(json.dumps(p));spec['policy_spec']=asset(pp)
+        pp=Path(spec['policy_spec']['path']);p=json.loads(pp.read_text());p['ordered_episode_indices']=list(range(30,39));pp.write_text(json.dumps(p));spec['policy_spec']=asset(pp)
     else:
         pp=Path(spec['policy_spec']['path']);p=json.loads(pp.read_text());rp=Path(p['route_registry']['path']);r=json.loads(rp.read_text());r['routes'][0]['sup_epsilon']=0.02;rp.write_text(json.dumps(r));p['route_registry']=asset(rp);pp.write_text(json.dumps(p));spec['policy_spec']=asset(pp)
     sup_session.write_text(json.dumps(spec))

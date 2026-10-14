@@ -159,9 +159,9 @@ class CampaignSession:
             raise ValueError("a learned/gated challenger cannot be exempted as a baseline")
         if self.policy_spec.route.method == "sup" and (
             self.spec["purpose"] != "baseline" or self.spec.get("selection_closed") is not True
-            or self.bank != tuple(range(40, 50)) or self.spec["scene_mode"] != "restore"
+            or len(self.bank) != 10 or self.spec["scene_mode"] != "restore"
         ):
-            raise ValueError("SuP comparator requires closed selection, restored scenes and frozen40..49 bank")
+            raise ValueError("SuP comparator requires closed selection, restored scenes and a registered ten-scene bank")
         if type(self.spec["baseline_cap"]) is not int or self.spec["baseline_cap"] < 0:
             raise ValueError("explicit baseline allocation required")
         if self.spec["challenger_cap"] != 20 or type(self.spec["challenger_cap"]) is not int:
