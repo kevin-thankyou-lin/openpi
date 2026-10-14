@@ -86,9 +86,13 @@ class CampaignRoute:
     dataset_manifest: FileAsset | None = None
     phase_names: tuple[str, ...] = ()
     asset_binding: TaskIdentity | None = None
+    sup_checkpoint: FileAsset | None = None
+    sup_epsilon: float | None = None
 
     @property
     def arm(self) -> str:
+        if self.method == "sup":
+            return "sup_eps" + str(self.sup_epsilon).replace(".", "p")
         return f"uniform{self.uniform_stride}" if self.method == "uniform" else self.method
 
     @property
@@ -99,6 +103,19 @@ class CampaignRoute:
         self.bddl.verify()
         if self.identity.bddl_sha256 != self.bddl.sha256:
             raise ValueError("task identity BDDL hash mismatch")
+        if self.method == "sup":
+            from .sup_identity import WEIGHTS
+            if self.sup_epsilon not in WEIGHTS or self.sup_checkpoint is None:
+                raise ValueError("SuP requires a preregistered July epsilon/checkpoint")
+            if self.uniform_stride is not None or any((self.phase_checkpoint, self.ontology,
+                    self.dataset_manifest, self.phase_names, self.asset_binding)):
+                raise ValueError("SuP route must not bind uniform/STRIDER assets")
+            self.sup_checkpoint.verify()
+            if self.sup_checkpoint.sha256 != WEIGHTS[self.sup_epsilon] or self.sup_checkpoint.path.stat().st_size != 5586716:
+                raise ValueError("SuP checkpoint differs from frozen July identity")
+            return
+        if self.sup_checkpoint is not None or self.sup_epsilon is not None:
+            raise ValueError("non-SuP route must not bind SuP assets")
         if self.method == "uniform":
             if type(self.uniform_stride) is not int or self.uniform_stride not in (1, 2, 3):
                 raise ValueError("uniform stride must be 1, 2 or 3")
@@ -219,6 +236,8 @@ def load_routes(
             dataset_manifest=asset(entry["dataset_manifest"]) if entry.get("dataset_manifest") else None,
             phase_names=tuple(entry.get("phase_names", ())),
             asset_binding=TaskIdentity(**binding) if binding is not None else None,
+            sup_checkpoint=asset(entry["sup_checkpoint"]) if entry.get("sup_checkpoint") else None,
+            sup_epsilon=entry.get("sup_epsilon"),
         )
         route.verify()
         if route.key in routes:

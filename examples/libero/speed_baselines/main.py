@@ -111,6 +111,10 @@ def eval_speed_baseline(args: Args, *, campaign=None) -> None:
     if campaign is not None:
         config["campaign_session_sha256"] = campaign.sha256
         config["ordered_episode_indices"] = list(campaign.bank)
+        if args.method == "sup":
+            from .sup_identity import expected_selector_metadata
+
+            config["sup_selector"] = expected_selector_metadata(campaign.policy_spec.route)
     if args.method == "strider":
         config["strider_checkpoint_sha256"] = _sha256(args.strider_checkpoint)
         config["strider_schedule_sha256"] = _sha256(args.strider_schedule)
@@ -170,6 +174,16 @@ def eval_speed_baseline(args: Args, *, campaign=None) -> None:
         )
 
     if campaign is not None:
+        if args.method == "sup":
+            from .sup_identity import validate_selector_metadata
+            from .campaign_session import write_new
+
+            try:
+                validate_selector_metadata(selector.metadata, campaign.policy_spec.route)
+            except BaseException:
+                selector.close()
+                raise
+            write_new(campaign.run_dir / "sup-selector-handshake.json", selector.metadata)
         campaign.connect(policy_metadata)
         if strider is not None:
             campaign.write_phase_input_proof(strider.phase_input_proof)

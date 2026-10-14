@@ -104,7 +104,7 @@ def load_policy_spec(path: pathlib.Path) -> PolicySpec:
     registry = asset(payload["route_registry"])
     route = select_route(load_routes(registry.path), suite=payload["suite"], task_id=payload["task_id"], arm=payload["arm"])
     schedule = asset(payload["rendered_schedule"]) if payload.get("rendered_schedule") else None
-    if route.method == "uniform" and schedule is not None:
+    if route.method in ("uniform", "sup") and schedule is not None:
         raise ValueError("uniform route must not require a phase schedule")
     if route.method == "strider":
         if schedule is None:
@@ -133,7 +133,8 @@ def load_policy_spec(path: pathlib.Path) -> PolicySpec:
 def expected_metadata(spec: PolicySpec) -> dict:
     spec.verify()
     result = {
-        "method": "strider_phase_candidate" if spec.route.method == "strider" else "uniform_reference",
+        "method": ("strider_phase_candidate" if spec.route.method == "strider" else
+                   "sup_comparator" if spec.route.method == "sup" else "uniform_reference"),
         "base_policy": BASE_POLICY,
         "base_checkpoint": BASE_CHECKPOINT,
         "evaluator_commit": spec.expected_evaluator_commit,
@@ -154,6 +155,10 @@ def expected_metadata(spec: PolicySpec) -> dict:
             "controller_sha256": spec.controller_sha256,
         },
     }
+    if spec.route.method == "sup":
+        from .sup_identity import expected_selector_metadata
+
+        result["sup_selector"] = expected_selector_metadata(spec.route)
     if spec.route.method == "strider":
         result.update(phase_checkpoint_sha256=spec.route.phase_checkpoint.sha256,
                       phase_dataset_manifest_sha256=spec.route.dataset_manifest.sha256,
