@@ -15,6 +15,7 @@ from examples.libero.speed_baselines import campaign_routes as cr
 from examples.libero.speed_baselines import campaign_session as cs
 from examples.libero.speed_baselines.actions import SupActionComposer
 from examples.libero.speed_baselines.actions import uniform_slices
+from examples.libero.speed_baselines.scene_replay import SceneIdentity
 
 
 def asset(path):
@@ -340,8 +341,6 @@ def test_implicit_noncampaign_phase_mode_refused_before_connect():
 
 @pytest.mark.parametrize("mode", ["capture", "restore"])
 def test_scene_hook_forwards_exact_official_state(tmp_path, monkeypatch, mode):
-    from examples.libero.speed_baselines.scene_replay import SceneIdentity
-
     original = np.zeros(9)
     identity = SceneIdentity("libero_10", 5, 31, "a" * 64, "b" * 64, "c" * 64, "d" * 64)
     scene, observations = {}, {"proprio": np.zeros(9)}
@@ -371,3 +370,84 @@ def test_scene_hook_forwards_exact_official_state(tmp_path, monkeypatch, mode):
     )
     assert result is observations
     assert calls == [mode]
+
+
+@pytest.mark.parametrize("extra", [
+    {"budget_mode": "unknown"},
+    {"confirmation_cap": 10},
+    {"budget_mode": cs.SEPARATE_BUDGET_MODE, "confirmation_cap": 20},
+    {"budget_mode": cs.SEPARATE_BUDGET_MODE, "confirmation_cap": True},
+])
+def test_invalid_budget_mode_rejected_in_session_preflight(session_spec, extra):
+    spec = json.loads(session_spec.read_text())
+    spec.update(extra)
+    session_spec.write_text(json.dumps(spec))
+    with pytest.raises(ValueError, match="budget_mode|confirmation cap"):
+        cs.CampaignSession(session_spec, repo=Path(cs.__file__).parents[3])
+
+
+def test_session_connect_seals_separate_runtime_caps(session_spec):
+    spec = json.loads(session_spec.read_text())
+    spec.update(budget_mode=cs.SEPARATE_BUDGET_MODE, confirmation_cap=10)
+    session_spec.write_text(json.dumps(spec))
+    session = cs.CampaignSession(session_spec, repo=Path(cs.__file__).parents[3])
+    connect(session)
+    limits = session.budget.snapshot()["limits"]
+    assert limits["primary"]["cap"]["purposes"] == ["causal_replay", "search_candidate"]
+    assert limits["primary"]["cap"]["limit"] == 20
+    assert limits["confirmation"]["cap"]["limit"] == 10
+    assert limits["baselines"]["reserved"] == 2
+    session.close()
+
+
+def test_split_cap_allows_twenty_exploration_then_ten_confirmation(tmp_path):
+    budget = cs.CampaignBudget(tmp_path / "ledger.jsonl", campaign_id="split-test",
+                               suite="libero_spatial", task=9, bddl_sha256="a"*64,
+                               source_pins={"code": "pinned"})
+    spec = {"budget_mode": cs.SEPARATE_BUDGET_MODE, "confirmation_cap": 10,
+            "purpose": "search_candidate", "confirmation_opened": False}
+    for name, cap in cs.campaign_caps(spec):
+        budget.configure(cap, authority="explicit20plus10", name=name)
+    for ep in range(20):
+        budget.import_start(str(ep), candidate_id="previous", purpose="search_candidate", episode=ep,
+                            task_identity={"suite": "libero_spatial", "task": 9, "bddl_sha256": "a"*64},
+                            source_pins={"code": "pinned"})
+    with pytest.raises(cs.BudgetError, match="exhausted"):
+        budget.reserve("extra", candidate_id="new", purpose="causal_replay", max_starts=1)
+    budget.reserve("final", candidate_id="frozen", purpose="candidate_validation", max_starts=10)
+    snap = budget.snapshot()
+    assert snap["spent"] == 20
+    assert snap["reserved"] == 0
+    assert snap["limits"]["confirmation"]["reserved"] == 10
+    with pytest.raises(cs.BudgetError, match="exhausted"):
+        budget.reserve("extra-final", candidate_id="frozen", purpose="candidate_validation", max_starts=1)
+    # A frozen combined-cap ledger cannot be silently migrated in place.
+    with pytest.raises(cs.BudgetError, match="sealed"):
+        budget.configure(cs.Cap("episodes", 20, cs.CHALLENGER_PURPOSES), authority="legacy")
+
+
+def test_split_mode_requires_confirmation_isolation():
+    spec = {"budget_mode": cs.SEPARATE_BUDGET_MODE, "confirmation_cap": 10,
+            "purpose": "causal_replay", "confirmation_opened": True}
+    with pytest.raises(ValueError, match="opening confirmation"):
+        cs.campaign_caps(spec)
+    spec.update(purpose="candidate_validation")
+    with pytest.raises(ValueError, match="freeze selection"):
+        cs.campaign_caps(spec)
+    spec.update(selection_closed=True)
+    assert len(cs.campaign_caps(spec)) == 2
+
+
+def test_actual_confirmation_start_blocks_exploration_even_if_flag_is_false(tmp_path):
+    budget = cs.CampaignBudget(tmp_path / "ledger.jsonl", campaign_id="split-test",
+                               suite="libero_spatial", task=9, bddl_sha256="a"*64,
+                               source_pins={"code": "pinned"})
+    spec = {"budget_mode": cs.SEPARATE_BUDGET_MODE, "confirmation_cap": 10,
+            "purpose": "search_candidate", "confirmation_opened": False,
+            "cap_authority": "explicit20plus10"}
+    cs.configure_campaign_caps(budget, spec)
+    budget.import_start("confirmation-0", candidate_id="selected", purpose="candidate_validation", episode=40,
+                        task_identity={"suite": "libero_spatial", "task": 9, "bddl_sha256": "a"*64},
+                        source_pins={"code": "pinned"})
+    with pytest.raises(ValueError, match="confirmation starts"):
+        cs.configure_campaign_caps(budget, spec)

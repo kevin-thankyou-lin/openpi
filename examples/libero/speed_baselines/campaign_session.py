@@ -39,6 +39,41 @@ from .scene_replay import write_scene
 
 SCHEMA = "strider-libero-session-v1"
 CHALLENGER_PURPOSES = ("search_candidate", "causal_replay", "candidate_validation")
+EXPLORATION_PURPOSES = ("search_candidate", "causal_replay")
+SEPARATE_BUDGET_MODE = "exploration20_confirmation10_v1"
+
+
+def campaign_caps(spec):
+    """Explicit prospective split; absent mode preserves frozen legacy accounting."""
+    mode = spec.get("budget_mode", "legacy_combined20")
+    if mode == "legacy_combined20":
+        if "confirmation_cap" in spec:
+            raise ValueError("separate confirmation cap requires explicit budget_mode")
+        return [("primary", Cap("episodes", 20, CHALLENGER_PURPOSES))]
+    if mode != SEPARATE_BUDGET_MODE:
+        raise ValueError("unsupported budget_mode")
+    if type(spec.get("confirmation_cap")) is not int or spec["confirmation_cap"] != 10:
+        raise ValueError("separate confirmation cap must be exactly ten")
+    if spec["purpose"] == "candidate_validation":
+        if spec.get("selection_closed") is not True:
+            raise ValueError("freeze selection before confirmation")
+    elif spec["purpose"] in EXPLORATION_PURPOSES and spec.get("confirmation_opened") is not False:
+        raise ValueError("cannot explore after opening confirmation")
+    return [
+        ("primary", Cap("episodes", 20, EXPLORATION_PURPOSES)),
+        ("confirmation", Cap("episodes", 10, ("candidate_validation",))),
+    ]
+
+
+def configure_campaign_caps(budget, spec):
+    for name, cap in campaign_caps(spec):
+        budget.configure(cap, authority=spec["cap_authority"], name=name)
+    if (
+        spec.get("budget_mode") == SEPARATE_BUDGET_MODE
+        and spec["purpose"] in EXPLORATION_PURPOSES
+        and budget.snapshot()["by_purpose"]["candidate_validation"] > 0
+    ):
+        raise ValueError("cannot explore after confirmation starts in this ledger")
 
 
 def digest(value):
@@ -126,6 +161,7 @@ class CampaignSession:
             raise ValueError("explicit baseline allocation required")
         if self.spec["challenger_cap"] != 20 or type(self.spec["challenger_cap"]) is not int:
             raise ValueError("this campaign has a hard 20-episode challenger cap")
+        campaign_caps(self.spec)
         self.sources = {key: asset(value) for key, value in self.spec["implementation_sources"].items()}
         if (
             not {"session", "evaluator", "actions", "controller", "policy_adapter", "scene_replay"}
@@ -273,7 +309,7 @@ class CampaignSession:
             bddl_sha256=self.identity.bddl_sha256,
             source_pins=self.spec["source_pins"],
         )
-        self.budget.configure(Cap("episodes", 20, CHALLENGER_PURPOSES), authority=self.spec["cap_authority"])
+        configure_campaign_caps(self.budget, self.spec)
         self.budget.configure(
             Cap("episodes", self.spec["baseline_cap"], ("baseline",)),
             authority=self.spec["baseline_authority"],
