@@ -15,6 +15,8 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8013)
     parser.add_argument("--phase-repo", type=Path)
+    parser.add_argument("--predictor-recipe", default="libero_source50_v1",
+                        choices=("libero_source50_v1", "libero_source50_temporal_v1"))
     parser.add_argument("--selector-host", default="127.0.0.1")
     parser.add_argument("--selector-port", default=8888, type=int)
     parser.add_argument("--preflight", action="store_true")
@@ -49,6 +51,7 @@ def main():
             strider_phase_repo=opts.phase_repo,
             fast_stride=3,
             strider_source50_selected=True,
+            strider_predictor_recipe=opts.predictor_recipe,
         )
     elif route.method == "sup":
         kwargs.update(selector_host=opts.selector_host, selector_port=opts.selector_port, fast_stride=2)
