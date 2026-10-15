@@ -11,6 +11,10 @@ import numpy as np
 from PIL import Image
 
 CODE_COMMIT = '6cbb1e20ea488a8b8f27af89a1129e1c8b80baa2'
+RECIPE_COMMITS = {
+    'libero_source50_v1': CODE_COMMIT,
+    'libero_source50_temporal_v1': '3c82409fc6f715eef165fe2f85626253184a69c0',
+}
 SUITE_PREFIX = {'libero_10': 'long', 'libero_spatial': 'spatial',
                 'libero_object': 'object', 'libero_goal': 'goal'}
 SOURCE_CAMERA = {'intermediate_size': [224, 224],
@@ -38,8 +42,12 @@ def source50_observation(obs):
     return {'rgb': image, 'proprio': state}
 
 
-def selector_class(base):
+def selector_class(base, *, recipe_name="libero_source50_v1"):
     """Extend only input adaptation and selected-identity checks."""
+    if recipe_name not in RECIPE_COMMITS:
+        raise ValueError("unregistered source50 predictor recipe")
+    code_commit = RECIPE_COMMITS[recipe_name]
+
     class Source50PhaseSelector(base):
         def __init__(self, **kwargs):
             import subprocess
@@ -48,7 +56,7 @@ def selector_class(base):
                 raise ValueError('source50 requires checked campaign phase-input binding')
             repo = Path(kwargs['phase_repo']).resolve()
             head = subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'], text=True).strip()
-            if head != CODE_COMMIT:
+            if head != code_commit:
                 raise ValueError('source50 code commit mismatch')
             # Base handles pinned import root; do not import STRIDER prematurely.
             super().__init__(**kwargs)
@@ -59,12 +67,22 @@ def selector_class(base):
             manifest = json.loads(manifest_raw)
             identity = binding['identity']
             task = SUITE_PREFIX[identity['suite']] + str(identity['task_id'])
-            registry = json.loads((repo/'src/strider/recipes/libero_source50_v1_checkpoints.json').read_text())['tasks'][task]
+            registry_raw = (repo/'src/strider/recipes'/f'{recipe_name}_checkpoints.json').read_bytes()
+            registry_payload = json.loads(registry_raw)
+            recipe = load_recipe(recipe_name)
+            if (registry_payload['recipe'] != recipe_name
+                    or registry_payload['recipe_sha256'] != recipe['sha256']):
+                raise ValueError('source50 registry recipe mismatch')
+            registry = registry_payload['tasks'][task]
             if binding['expected_checkpoint_sha256'] != registry['checkpoint_sha256']:
                 raise ValueError('checkpoint is not the selected source50 task')
             if binding['expected_manifest_sha256'] != registry['dataset_manifest_sha256']:
                 raise ValueError('manifest is not the selected source50 task')
-            recipe = load_recipe()
+            if recipe_name == 'libero_source50_temporal_v1':
+                metadata = self.predictor._metadata
+                if (metadata.get('recipe_name') != recipe_name
+                        or metadata.get('recipe_sha256') != recipe['sha256']):
+                    raise ValueError('source50 checkpoint recipe mismatch')
             validate_recipe_manifest(recipe, manifest)
             validate_recipe_model(recipe, vars(self.predictor._model.config))
             if manifest['provenance']['source_camera'] != SOURCE_CAMERA:
@@ -72,7 +90,9 @@ def selector_class(base):
             if tuple(self.predictor.class_names) != tuple(registry['class_names']):
                 raise ValueError('source50 phase ontology mismatch')
             self.source50_adapter_proof = {
-                'code_commit': CODE_COMMIT, 'task': task,
+                'code_commit': code_commit, 'task': task,
+                'recipe': recipe_name, 'recipe_sha256': recipe['sha256'],
+                'registry_sha256': hashlib.sha256(registry_raw).hexdigest(),
                 'runtime_rgb': 'raw observed agentview rotate180 cv2-linear224 Pillow-bilinear84',
                 'observed_state': 'joint7+gripper2', 'history': 4, 'horizon': 10,
                 'future_phases_used': True,
@@ -85,7 +105,7 @@ def selector_class(base):
     return Source50PhaseSelector
 
 
-def install(strider_client_module):
-    cls = selector_class(strider_client_module.StriderPhaseSelector)
+def install(strider_client_module, *, recipe_name="libero_source50_v1"):
+    cls = selector_class(strider_client_module.StriderPhaseSelector, recipe_name=recipe_name)
     strider_client_module.StriderPhaseSelector = cls
     return cls

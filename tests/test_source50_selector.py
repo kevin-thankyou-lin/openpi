@@ -52,3 +52,21 @@ def test_requires_checked_source50_binding():
     cls = selector_class(StriderPhaseSelector)
     with pytest.raises(ValueError, match='checked campaign'):
         cls(phase_input_binding=None)
+
+
+def test_recipe_selection_keeps_defaults_and_refuses_arbitrary_source(monkeypatch, tmp_path):
+    import subprocess
+    from examples.libero.speed_baselines.source50_selector import CODE_COMMIT, RECIPE_COMMITS
+
+    assert RECIPE_COMMITS['libero_source50_v1'] == CODE_COMMIT
+    assert RECIPE_COMMITS['libero_source50_temporal_v1'] == '3c82409fc6f715eef165fe2f85626253184a69c0'
+    with pytest.raises(ValueError, match='unregistered'):
+        selector_class(StriderPhaseSelector, recipe_name='custom')
+    for recipe, expected in RECIPE_COMMITS.items():
+        cls = selector_class(StriderPhaseSelector, recipe_name=recipe)
+        assert cls.plan is StriderPhaseSelector.plan
+        assert cls.reset_episode is StriderPhaseSelector.reset_episode
+        wrong = next(value for value in RECIPE_COMMITS.values() if value != expected)
+        monkeypatch.setattr(subprocess, 'check_output', lambda *a, **kw: wrong)
+        with pytest.raises(ValueError, match='code commit mismatch'):
+            cls(phase_input_binding={}, phase_repo=tmp_path)
