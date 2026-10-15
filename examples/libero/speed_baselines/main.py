@@ -77,6 +77,7 @@ class Args:
     strider_device: str = "cuda"
     strider_legacy_input_mode: bool = False
     strider_source50_selected: bool = False
+    strider_predictor_recipe: str = "libero_source50_v1"
     resume: bool = False
     save_strider_telemetry: bool = False
 
@@ -148,7 +149,7 @@ def eval_speed_baseline(args: Args, *, campaign=None) -> None:
     if args.strider_source50_selected:
         from .source50_selector import selector_class
 
-        phase_selector_class = selector_class(StriderPhaseSelector)
+        phase_selector_class = selector_class(StriderPhaseSelector, recipe_name=args.strider_predictor_recipe)
     strider = (
         phase_selector_class(
             checkpoint=args.strider_checkpoint,
